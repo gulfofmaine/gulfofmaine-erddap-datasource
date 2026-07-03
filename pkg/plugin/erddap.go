@@ -1,0 +1,282 @@
+package plugin
+
+import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/url"
+	"sort"
+	"strings"
+	"time"
+	"unicode/utf8"
+
+	"github.com/grafana/grafana-plugin-sdk-go/backend"
+	"github.com/grafana/grafana-plugin-sdk-go/data"
+	"github.com/gulfofmaine/erddap/pkg/models"
+)
+
+// erddapStructuralChars are ERDDAP query-string characters that are kept
+// literal (unescaped) by escapeERDDAP even though they fall outside the
+// RFC 3986 "unreserved" set. `&` separates constraints/variables, `,`
+// separates variable names, `=` and the relational operators are embedded
+// directly in constraints (e.g. "depth<2"), and `(`, `)`, `:`, `/` show up
+// in constraint values ERDDAP expects raw (timestamps, function calls).
+const erddapStructuralChars = "&,=!():/"
+
+// numericColumnTypes are the ERDDAP tabledap column dataTypes that should be
+// decoded as []*float64 fields.
+var numericColumnTypes = map[string]bool{
+	"byte": true, "ubyte": true,
+	"short": true, "ushort": true,
+	"int": true, "uint": true,
+	"long": true, "ulong": true,
+	"float": true, "double": true,
+}
+
+// erddapRow pairs a parsed row time with the raw cells of that row, so rows
+// can be sorted by time before columnar data.Fields are built. Multi-station
+// tabledap results can arrive with interleaved timestamps.
+type erddapRow struct {
+	time  time.Time
+	cells []json.RawMessage
+}
+
+// erddapTableResponse mirrors the shape of an ERDDAP tabledap .json response:
+// https://erddap.<host>/erddap/tabledap/<datasetID>.json
+type erddapTableResponse struct {
+	Table struct {
+		ColumnNames []string            `json:"columnNames"`
+		ColumnTypes []string            `json:"columnTypes"`
+		ColumnUnits []string            `json:"columnUnits"`
+		Rows        [][]json.RawMessage `json:"rows"`
+	} `json:"table"`
+}
+
+// buildTabledapURL builds the ERDDAP tabledap .json request URL for qm over
+// the query's time range tr. The query string is ERDDAP's positional
+// "vars&constraint&constraint" form (not key=value pairs), so it is built by
+// hand and assigned directly to u.RawQuery rather than through url.Values
+// (which would re-order and re-encode as key=value).
+func buildTabledapURL(baseURL string, qm models.QueryModel, tr backend.TimeRange) (string, error) {
+	u, err := url.Parse(baseURL)
+	if err != nil {
+		return "", err
+	}
+	u = u.JoinPath("tabledap", qm.DatasetID+".json")
+
+	variables := cleanVariables(qm.Variables)
+
+	parts := []string{
+		strings.Join(variables, ","),
+		"time>=" + tr.From.UTC().Format(time.RFC3339),
+		"time<=" + tr.To.UTC().Format(time.RFC3339),
+	}
+	if qm.Constraints != "" {
+		parts = append(parts, qm.Constraints)
+	}
+
+	u.RawQuery = escapeERDDAP(strings.Join(parts, "&"))
+
+	return u.String(), nil
+}
+
+// cleanVariables splits the user-supplied comma-separated variable list,
+// trims whitespace, drops empty entries, and prepends "time" (de-duping it
+// if the user already included it — ERDDAP always needs a time column and
+// listing it twice is invalid).
+func cleanVariables(raw string) []string {
+	result := []string{"time"}
+	seen := map[string]bool{"time": true}
+
+	for _, v := range strings.Split(raw, ",") {
+		v = strings.TrimSpace(v)
+		if v == "" || seen[v] {
+			continue
+		}
+		seen[v] = true
+		result = append(result, v)
+	}
+
+	return result
+}
+
+// escapeERDDAP percent-encodes s rune-by-rune for use in an ERDDAP tabledap
+// query string: RFC 3986 unreserved characters (A-Za-z0-9-_.~) and ERDDAP's
+// structural characters (erddapStructuralChars) are kept literal; everything
+// else — including the `< > "` characters RFC 3986 forbids raw in a query
+// string, spaces, and non-ASCII runes — is percent-encoded byte-by-byte over
+// the rune's UTF-8 encoding.
+//
+// v1 limitation: a literal `&` inside a constraint's string value (e.g.
+// station="A&B") must be pre-encoded by the caller, since `&` is always kept
+// literal here as the constraint separator.
+func escapeERDDAP(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+
+	for _, r := range s {
+		if isUnreservedRune(r) || strings.ContainsRune(erddapStructuralChars, r) {
+			b.WriteRune(r)
+			continue
+		}
+
+		var buf [utf8.UTFMax]byte
+		n := utf8.EncodeRune(buf[:], r)
+		for _, c := range buf[:n] {
+			fmt.Fprintf(&b, "%%%02X", c)
+		}
+	}
+
+	return b.String()
+}
+
+func isUnreservedRune(r rune) bool {
+	return (r >= 'A' && r <= 'Z') ||
+		(r >= 'a' && r <= 'z') ||
+		(r >= '0' && r <= '9') ||
+		r == '-' || r == '_' || r == '.' || r == '~'
+}
+
+// parseTableJSON decodes an ERDDAP tabledap .json response body (the
+// "columnNames/columnTypes/columnUnits/rows" shape) into a data.Frame. Rows
+// are sorted ascending by their time column before fields are built, since
+// multi-station queries can return interleaved timestamps.
+func parseTableJSON(r io.Reader, frameName string) (*data.Frame, error) {
+	var resp erddapTableResponse
+	if err := json.NewDecoder(r).Decode(&resp); err != nil {
+		return nil, err
+	}
+
+	table := resp.Table
+
+	timeIdx := -1
+	for i, name := range table.ColumnNames {
+		if name == "time" {
+			timeIdx = i
+			break
+		}
+	}
+	if timeIdx == -1 {
+		return nil, errors.New("erddap: response has no \"time\" column")
+	}
+
+	rows := make([]erddapRow, 0, len(table.Rows))
+	for _, cells := range table.Rows {
+		if timeIdx >= len(cells) || isJSONNull(cells[timeIdx]) {
+			continue // skip rows with a null time
+		}
+
+		var s string
+		if err := json.Unmarshal(cells[timeIdx], &s); err != nil {
+			continue // time cell wasn't a JSON string; unparseable
+		}
+
+		t, err := time.Parse(time.RFC3339, s)
+		if err != nil {
+			continue // skip rows with an unparseable time
+		}
+
+		rows = append(rows, erddapRow{time: t, cells: cells})
+	}
+
+	sortRowsByTime(rows)
+
+	frame := data.NewFrame(frameName)
+	for i, name := range table.ColumnNames {
+		var colType, unit string
+		if i < len(table.ColumnTypes) {
+			colType = table.ColumnTypes[i]
+		}
+		if i < len(table.ColumnUnits) {
+			unit = table.ColumnUnits[i]
+		}
+
+		var field *data.Field
+		switch {
+		case i == timeIdx:
+			times := make([]time.Time, len(rows))
+			for j, row := range rows {
+				times[j] = row.time
+			}
+			field = data.NewField(name, nil, times)
+		case numericColumnTypes[colType]:
+			values := make([]*float64, len(rows))
+			for j, row := range rows {
+				values[j] = parseFloatCell(cellAt(row.cells, i))
+			}
+			field = data.NewField(name, nil, values)
+		default:
+			values := make([]*string, len(rows))
+			for j, row := range rows {
+				values[j] = parseStringCell(cellAt(row.cells, i))
+			}
+			field = data.NewField(name, nil, values)
+		}
+
+		if unit != "" && unit != "UTC" {
+			field.Config = &data.FieldConfig{Unit: unit}
+		}
+
+		frame.Fields = append(frame.Fields, field)
+	}
+
+	return frame, nil
+}
+
+// sortRowsByTime sorts rows ascending by time in place. Kept as a small,
+// independently testable helper since parseTableJSON must re-sort
+// multi-station tabledap results that can arrive with interleaved
+// timestamps.
+func sortRowsByTime(rows []erddapRow) {
+	sort.SliceStable(rows, func(i, j int) bool {
+		return rows[i].time.Before(rows[j].time)
+	})
+}
+
+// cellAt returns cells[i], or a JSON null RawMessage if the row is short a
+// column (defensive against malformed/ragged ERDDAP rows).
+func cellAt(cells []json.RawMessage, i int) json.RawMessage {
+	if i >= len(cells) {
+		return json.RawMessage("null")
+	}
+	return cells[i]
+}
+
+// isJSONNull reports whether raw is a JSON null (or empty/absent, which is
+// treated the same way).
+func isJSONNull(raw json.RawMessage) bool {
+	return len(raw) == 0 || string(bytes.TrimSpace(raw)) == "null"
+}
+
+// parseFloatCell decodes a numeric-column cell into *float64, returning nil
+// for JSON null or any value that doesn't decode as a number (e.g. ERDDAP's
+// bare, unquoted "NaN" token, which is not valid JSON).
+func parseFloatCell(raw json.RawMessage) *float64 {
+	if isJSONNull(raw) {
+		return nil
+	}
+
+	var f float64
+	if err := json.Unmarshal(raw, &f); err != nil {
+		return nil
+	}
+
+	return &f
+}
+
+// parseStringCell decodes a String-column cell into *string, returning nil
+// for JSON null or any value that doesn't decode as a JSON string.
+func parseStringCell(raw json.RawMessage) *string {
+	if isJSONNull(raw) {
+		return nil
+	}
+
+	var s string
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return nil
+	}
+
+	return &s
+}
