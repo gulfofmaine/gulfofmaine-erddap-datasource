@@ -4,6 +4,8 @@ This plugin lets [ERDDAP](https://www.ncei.noaa.gov/erddap/information.html) **t
 Grafana data sources. Queries are executed in the Go backend (not the browser), so this datasource also
 works with Grafana alerting.
 
+![Exploring ERDDAP in Grafana](.github/erddap-grafana.png)
+
 Only public ERDDAP servers are supported: there is no API key or credential handling, and requests are
 made as anonymous GETs against the configured ERDDAP base URL.
 
