@@ -4,9 +4,9 @@ updates:
     directory: '/'
     schedule:
       interval: 'weekly'
-    # Wait 5 days before updating to help circumvent supply chain attacks
+    # Wait 7 days before updating to help circumvent supply chain attacks
     cooldown:
-      default-days: 5
+      default-days: 7
       # Exclude plugin-e2e to prevent false positives with canary e2e tests
       exclude:
         - '@grafana/plugin-e2e'
@@ -50,6 +50,8 @@ updates:
     commit-message:
       prefix: 'chore(ci)'
     open-pull-requests-limit: 5
+    cooldown:
+      default-days: 7
 
   - package-ecosystem: 'gomod'
     directory: '/'
@@ -62,3 +64,16 @@ updates:
     commit-message:
       prefix: 'chore'
       include: 'scope'
+    cooldown:
+      default-days: 7
+
+  - package-ecosystem: 'pre-commit'
+    directory: '/'
+    schedule:
+      interval: 'monthly'
+    groups:
+      pre-commit:
+        patterns:
+          - '*'
+    cooldown:
+      default-days: 7
