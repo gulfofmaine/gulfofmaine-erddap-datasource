@@ -24,7 +24,7 @@ export function ConfigEditor(props: Props) {
       <Input
         id="config-editor-base-url"
         onChange={onBaseUrlChange}
-        value={jsonData.baseUrl}
+        value={jsonData.baseUrl ?? ''}
         placeholder="https://data.neracoos.org/erddap"
         width={60}
       />

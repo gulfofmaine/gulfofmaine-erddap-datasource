@@ -41,3 +41,21 @@ func TestLoadQueryModel_MissingVariables(t *testing.T) {
 		t.Fatal("expected error for empty variables, got nil")
 	}
 }
+
+func TestLoadQueryModel_WhitespaceOnlyDatasetID(t *testing.T) {
+	raw := json.RawMessage(`{"datasetId": "   ", "variables": "temperature"}`)
+
+	_, err := LoadQueryModel(raw)
+	if err == nil {
+		t.Fatal("expected error for whitespace-only datasetId, got nil")
+	}
+}
+
+func TestLoadQueryModel_WhitespaceOnlyVariables(t *testing.T) {
+	raw := json.RawMessage(`{"datasetId": "M01_sbe37_all", "variables": "   "}`)
+
+	_, err := LoadQueryModel(raw)
+	if err == nil {
+		t.Fatal("expected error for whitespace-only variables, got nil")
+	}
+}

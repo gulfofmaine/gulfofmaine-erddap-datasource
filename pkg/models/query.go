@@ -3,6 +3,7 @@ package models
 import (
 	"encoding/json"
 	"errors"
+	"strings"
 )
 
 type QueryModel struct {
@@ -18,11 +19,15 @@ func LoadQueryModel(raw json.RawMessage) (*QueryModel, error) {
 		return nil, err
 	}
 
-	if qm.DatasetID == "" {
+	// TrimSpace before checking for emptiness (rather than requiring
+	// qm.DatasetID/Variables == "") so a whitespace-only value is rejected
+	// the same way the frontend's filterQuery gate (src/datasource.ts)
+	// already rejects it before ever sending a query.
+	if strings.TrimSpace(qm.DatasetID) == "" {
 		return nil, errors.New("datasetId is required")
 	}
 
-	if qm.Variables == "" {
+	if strings.TrimSpace(qm.Variables) == "" {
 		return nil, errors.New("variables is required")
 	}
 

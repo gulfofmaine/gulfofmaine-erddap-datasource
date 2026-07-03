@@ -78,6 +78,35 @@ func TestBuildTabledapURL(t *testing.T) {
 			},
 			want: "https://example.com/erddap/tabledap/M01_sbe37_all.json?time,temperature&time%3E=2024-01-01T00:00:00Z&time%3C=2024-01-02T00:00:00Z",
 		},
+		{
+			name:    "literal ampersand inside quoted constraint value is escaped, not a separator",
+			baseURL: "https://example.com/erddap",
+			qm: models.QueryModel{
+				DatasetID:   "M01_sbe37_all",
+				Variables:   "temperature",
+				Constraints: `station="A&B"`,
+			},
+			want: "https://example.com/erddap/tabledap/M01_sbe37_all.json?time,temperature&time%3E=2024-01-01T00:00:00Z&time%3C=2024-01-02T00:00:00Z&station=%22A%26B%22",
+		},
+		{
+			name:    "literal ampersand inside quoted value followed by a real constraint separator",
+			baseURL: "https://example.com/erddap",
+			qm: models.QueryModel{
+				DatasetID:   "M01_sbe37_all",
+				Variables:   "temperature",
+				Constraints: `station="A&B"&depth<2`,
+			},
+			want: "https://example.com/erddap/tabledap/M01_sbe37_all.json?time,temperature&time%3E=2024-01-01T00:00:00Z&time%3C=2024-01-02T00:00:00Z&station=%22A%26B%22&depth%3C2",
+		},
+		{
+			name:    "datasetId with slash and percent is path-escaped, not path-cleaned",
+			baseURL: "https://example.com/erddap",
+			qm: models.QueryModel{
+				DatasetID: "bad/../id%",
+				Variables: "temperature",
+			},
+			want: "https://example.com/erddap/tabledap/bad%2F..%2Fid%25.json?time,temperature&time%3E=2024-01-01T00:00:00Z&time%3C=2024-01-02T00:00:00Z",
+		},
 	}
 
 	for _, tc := range tests {
@@ -118,6 +147,54 @@ func TestEscapeERDDAP(t *testing.T) {
 			got := escapeERDDAP(tc.in)
 			if got != tc.want {
 				t.Errorf("escapeERDDAP(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestEscapeERDDAPConstraints(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "existing unquoted case is unchanged",
+			in:   `station="A01"&depth<2`,
+			want: "station=%22A01%22&depth%3C2",
+		},
+		{
+			name: "literal ampersand inside quotes is escaped",
+			in:   `station="A&B"`,
+			want: "station=%22A%26B%22",
+		},
+		{
+			name: "literal ampersand inside quotes followed by a real separator",
+			in:   `station="A&B"&depth<2`,
+			want: "station=%22A%26B%22&depth%3C2",
+		},
+		{
+			name: "comma and parens inside quotes are escaped",
+			in:   `name="A,(B)"`,
+			want: "name=%22A%2C%28B%29%22",
+		},
+		{
+			name: "structural chars outside quotes stay literal",
+			in:   `a=1&b=2,c`,
+			want: "a=1&b=2,c",
+		},
+		{
+			name: "backslash-escaped quote inside a value does not toggle quote state",
+			in:   `name="A\"&B"`,
+			want: `name=%22A%5C%22%26B%22`,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := escapeERDDAPConstraints(tc.in)
+			if got != tc.want {
+				t.Errorf("escapeERDDAPConstraints(%q) = %q, want %q", tc.in, got, tc.want)
 			}
 		})
 	}

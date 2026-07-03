@@ -1,9 +1,11 @@
 package plugin
 
 import (
+	"bytes"
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
@@ -169,6 +171,76 @@ func TestQueryDataServerError(t *testing.T) {
 	}
 }
 
+func TestQueryDataEmptyErrorBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		// Deliberately no body written.
+	}))
+	defer srv.Close()
+
+	ds := Datasource{
+		settings:   &models.PluginSettings{BaseURL: srv.URL},
+		httpClient: srv.Client(),
+	}
+
+	req := &backend.QueryDataRequest{
+		Queries: []backend.DataQuery{
+			{
+				RefID: "A",
+				JSON:  []byte(`{"datasetId": "foo", "variables": "temperature", "constraints": ""}`),
+			},
+		},
+	}
+
+	resp, err := ds.QueryData(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	dr := resp.Responses["A"]
+	if dr.Error == nil {
+		t.Fatal("expected DataResponse error, got nil")
+	}
+	if dr.Error.Error() != "ERDDAP returned HTTP 502" {
+		t.Errorf("expected fallback message %q, got %q", "ERDDAP returned HTTP 502", dr.Error.Error())
+	}
+}
+
+func TestQueryDataMalformedOKBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`not valid json`))
+	}))
+	defer srv.Close()
+
+	ds := Datasource{
+		settings:   &models.PluginSettings{BaseURL: srv.URL},
+		httpClient: srv.Client(),
+	}
+
+	req := &backend.QueryDataRequest{
+		Queries: []backend.DataQuery{
+			{
+				RefID: "A",
+				JSON:  []byte(`{"datasetId": "foo", "variables": "temperature", "constraints": ""}`),
+			},
+		},
+	}
+
+	resp, err := ds.QueryData(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	dr := resp.Responses["A"]
+	if dr.Error == nil {
+		t.Fatal("expected DataResponse error, got nil")
+	}
+	if dr.ErrorSource != backend.ErrorSourceDownstream {
+		t.Errorf("expected downstream ErrorSource for a malformed 200 body, got %q", dr.ErrorSource)
+	}
+}
+
 func TestCheckHealth(t *testing.T) {
 	t.Run("ok", func(t *testing.T) {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -219,6 +291,55 @@ func TestCheckHealth(t *testing.T) {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte("<html>not erddap</html>"))
+		}))
+		defer srv.Close()
+
+		ds := Datasource{
+			settings:   &models.PluginSettings{BaseURL: srv.URL},
+			httpClient: srv.Client(),
+		}
+
+		res, err := ds.CheckHealth(context.Background(), &backend.CheckHealthRequest{})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if res.Status != backend.HealthStatusError {
+			t.Errorf("expected HealthStatusError, got %v", res.Status)
+		}
+		if !strings.Contains(res.Message, "200") {
+			t.Errorf("expected message to include the HTTP status code 200, got %q", res.Message)
+		}
+	})
+
+	t.Run("non-200 status includes status code in message", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte("service unavailable"))
+		}))
+		defer srv.Close()
+
+		ds := Datasource{
+			settings:   &models.PluginSettings{BaseURL: srv.URL},
+			httpClient: srv.Client(),
+		}
+
+		res, err := ds.CheckHealth(context.Background(), &backend.CheckHealthRequest{})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if res.Status != backend.HealthStatusError {
+			t.Errorf("expected HealthStatusError, got %v", res.Status)
+		}
+		if !strings.Contains(res.Message, "503") {
+			t.Errorf("expected message to include the HTTP status code 503, got %q", res.Message)
+		}
+	})
+
+	t.Run("oversized body is bounded, not read in full", func(t *testing.T) {
+		huge := bytes.Repeat([]byte("x"), 5*1024*1024) // 5 MiB, well over any sane cap
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(huge)
 		}))
 		defer srv.Close()
 

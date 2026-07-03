@@ -125,7 +125,7 @@ func (d *Datasource) CheckHealth(ctx context.Context, _ *backend.CheckHealthRequ
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxDiagnosticBodyBytes))
 	if err != nil {
 		return &backend.CheckHealthResult{
 			Status:  backend.HealthStatusError,
@@ -143,6 +143,6 @@ func (d *Datasource) CheckHealth(ctx context.Context, _ *backend.CheckHealthRequ
 
 	return &backend.CheckHealthResult{
 		Status:  backend.HealthStatusError,
-		Message: "URL does not appear to be an ERDDAP server",
+		Message: fmt.Sprintf("URL does not appear to be an ERDDAP server (HTTP %d)", resp.StatusCode),
 	}, nil
 }

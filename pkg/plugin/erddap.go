@@ -39,6 +39,13 @@ var erddapMessageRe = regexp.MustCompile(`message="([^"]*)"`)
 // error body doesn't match the expected message="..." shape.
 const maxFallbackMessageLen = 500
 
+// maxDiagnosticBodyBytes bounds how much of a response body fetch and
+// CheckHealth will read for error messages and health-check probes. ERDDAP
+// error bodies and the /version endpoint are both tiny plain text; this is
+// generous headroom against a misbehaving or malicious server streaming an
+// unbounded body.
+const maxDiagnosticBodyBytes = 8 << 10 // 8 KiB
+
 // erddapStructuralChars are ERDDAP query-string characters that are kept
 // literal (unescaped) by escapeERDDAP even though they fall outside the
 // RFC 3986 "unreserved" set. `&` separates constraints/variables, `,`
@@ -86,20 +93,32 @@ func buildTabledapURL(baseURL string, qm models.QueryModel, tr backend.TimeRange
 	if err != nil {
 		return "", err
 	}
-	u = u.JoinPath("tabledap", qm.DatasetID+".json")
+	// url.JoinPath treats each element as already escaped: it does not
+	// percent-encode them, and it path-cleans the joined result (collapsing
+	// "../" etc). url.PathEscape first turns any "/" or "%" in the
+	// datasetID into %2F/%25 so JoinPath can't misinterpret them as path
+	// separators or (invalid) percent-escapes to clean away.
+	u = u.JoinPath("tabledap", url.PathEscape(qm.DatasetID+".json"))
 
 	variables := cleanVariables(qm.Variables)
 
+	// Each segment is escaped on its own, then joined with a literal "&",
+	// rather than joining first and escaping the whole string: the user
+	// Constraints segment needs quote-aware escaping (escapeERDDAPConstraints)
+	// while the generated variables/time segments keep using escapeERDDAP.
+	// Since "&" is always kept literal by both escapers, this produces the
+	// same output as escaping-then-joining for every segment that doesn't
+	// itself need constraint-quote awareness.
 	parts := []string{
-		strings.Join(variables, ","),
-		"time>=" + tr.From.UTC().Format(time.RFC3339),
-		"time<=" + tr.To.UTC().Format(time.RFC3339),
+		escapeERDDAP(strings.Join(variables, ",")),
+		escapeERDDAP("time>=" + tr.From.UTC().Format(time.RFC3339)),
+		escapeERDDAP("time<=" + tr.To.UTC().Format(time.RFC3339)),
 	}
 	if qm.Constraints != "" {
-		parts = append(parts, qm.Constraints)
+		parts = append(parts, escapeERDDAPConstraints(qm.Constraints))
 	}
 
-	u.RawQuery = escapeERDDAP(strings.Join(parts, "&"))
+	u.RawQuery = strings.Join(parts, "&")
 
 	return u.String(), nil
 }
@@ -131,9 +150,11 @@ func cleanVariables(raw string) []string {
 // string, spaces, and non-ASCII runes — is percent-encoded byte-by-byte over
 // the rune's UTF-8 encoding.
 //
-// v1 limitation: a literal `&` inside a constraint's string value (e.g.
-// station="A&B") must be pre-encoded by the caller, since `&` is always kept
-// literal here as the constraint separator.
+// This treats every structural character literally regardless of context, so
+// it is only safe for segments that don't contain user-supplied quoted
+// string values (the variables list and the generated time>=/time<=
+// constraints). User Constraints go through escapeERDDAPConstraints instead,
+// which is quote-aware.
 func escapeERDDAP(s string) string {
 	var b strings.Builder
 	b.Grow(len(s))
@@ -144,14 +165,69 @@ func escapeERDDAP(s string) string {
 			continue
 		}
 
-		var buf [utf8.UTFMax]byte
-		n := utf8.EncodeRune(buf[:], r)
-		for _, c := range buf[:n] {
-			fmt.Fprintf(&b, "%%%02X", c)
-		}
+		percentEncodeRune(&b, r)
 	}
 
 	return b.String()
+}
+
+// escapeERDDAPConstraints percent-encodes a user-supplied ERDDAP constraints
+// segment, the same way escapeERDDAP does outside of double-quoted string
+// values — but inside a quoted value (e.g. the "A&B" in station="A&B") every
+// character that is not RFC 3986 "unreserved" is percent-encoded, including
+// erddapStructuralChars like `& , ( ) : /`. This lets a user type a literal
+// `&` (or comma, parens, etc.) inside a quoted constraint value and have it
+// escaped automatically, instead of being misread as the `&` that separates
+// constraints.
+//
+// Quote state is tracked by counting `"` runes, toggled on each unescaped
+// `"`. A backslash-escaped `\"` inside a quoted value is treated as a
+// literal embedded quote character, not the end of the string, so it does
+// not toggle the quote state.
+func escapeERDDAPConstraints(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+
+	runes := []rune(s)
+	inQuotes := false
+	for i, r := range runes {
+		if r == '"' {
+			escaped := inQuotes && i > 0 && runes[i-1] == '\\'
+			if !escaped {
+				inQuotes = !inQuotes
+			}
+			b.WriteString("%22")
+			continue
+		}
+
+		if inQuotes {
+			if isUnreservedRune(r) {
+				b.WriteRune(r)
+			} else {
+				percentEncodeRune(&b, r)
+			}
+			continue
+		}
+
+		if isUnreservedRune(r) || strings.ContainsRune(erddapStructuralChars, r) {
+			b.WriteRune(r)
+			continue
+		}
+
+		percentEncodeRune(&b, r)
+	}
+
+	return b.String()
+}
+
+// percentEncodeRune writes r to b as one or more "%XX" escapes over its
+// UTF-8 encoding.
+func percentEncodeRune(b *strings.Builder, r rune) {
+	var buf [utf8.UTFMax]byte
+	n := utf8.EncodeRune(buf[:], r)
+	for _, c := range buf[:n] {
+		fmt.Fprintf(b, "%%%02X", c)
+	}
 }
 
 func isUnreservedRune(r rune) bool {
@@ -308,13 +384,19 @@ func parseStringCell(raw json.RawMessage) *string {
 //
 //   - A transport-level failure (DNS, connection refused, timeout, ...) is
 //     wrapped as a backend.DownstreamError.
+//   - HTTP 200 with a body parseTableJSON can't decode is wrapped as a
+//     backend.DownstreamError: the request succeeded, so this is ERDDAP
+//     returning something unexpected rather than a plugin bug, and should
+//     not be attributed to the plugin in error-source metrics.
 //   - HTTP 404 whose body contains ERDDAP's canonical "no matching results"
 //     message is not an error: it returns an empty frame with the same
 //     typed fields (time + one []*float64 per requested variable) a
 //     successful query would have, so panels render "No data" instead of
 //     an error.
 //   - Any other non-200 response has its message="..." extracted from the
-//     body (falling back to a trimmed body prefix) and is wrapped with
+//     body (falling back to a trimmed body prefix, or — if the body is
+//     empty or doesn't match either shape — "ERDDAP returned HTTP <code>" so
+//     the error is never blank) and is wrapped with
 //     backend.NewErrorWithSource, deriving the ErrorSource from the HTTP
 //     status code.
 func (d *Datasource) fetch(ctx context.Context, url string, qm models.QueryModel) (*data.Frame, error) {
@@ -330,11 +412,18 @@ func (d *Datasource) fetch(ctx context.Context, url string, qm models.QueryModel
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusOK {
-		return parseTableJSON(resp.Body, qm.DatasetID)
+		frame, err := parseTableJSON(resp.Body, qm.DatasetID)
+		if err != nil {
+			return nil, backend.DownstreamError(fmt.Errorf("erddap: parsing response: %w", err))
+		}
+		return frame, nil
 	}
 
-	body, _ := io.ReadAll(resp.Body)
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxDiagnosticBodyBytes))
 	message := extractERDDAPMessage(body)
+	if message == "" {
+		message = fmt.Sprintf("ERDDAP returned HTTP %d", resp.StatusCode)
+	}
 
 	if resp.StatusCode == http.StatusNotFound && strings.Contains(message, erddapNoDataMessage) {
 		return emptyTypedFrame(qm), nil

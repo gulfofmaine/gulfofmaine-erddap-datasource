@@ -51,11 +51,14 @@ The response is returned as a single Grafana time series frame with one field pe
 The dashboard's time range is always translated into `time>=<from>&time<=<to>` constraints, using RFC3339
 timestamps in UTC (`Z` suffix). There is no way to omit the time range from a query.
 
-### Constraints caveat: literal `&` in a quoted value
+### Quoted values: special characters are escaped automatically
 
-Because `&` is the separator between constraints, a literal `&` that needs to appear _inside_ a quoted
-string value (e.g. a station name containing an ampersand) must be pre-percent-encoded by the user as
-`%26` in the Constraints field. Any other `&` is treated as a constraint separator.
+The Constraints field understands raw ERDDAP constraint syntax, including double-quoted string values
+(e.g. `station="A01"`). The plugin tracks quote state while escaping: a literal `&` (or `,`, `(`, `)`,
+`:`, `/`, etc.) typed _inside_ a quoted value is percent-encoded automatically, so it can't be mistaken
+for the `&` that separates constraints — no manual pre-encoding needed. For example,
+`station="A&B"&depth<2` is sent as `station=%22A%26B%22&depth%3C2`. The same characters left _outside_
+quotes keep their structural meaning (`&` separates constraints, `,` separates variable names, etc.).
 
 ### No matching results
 
