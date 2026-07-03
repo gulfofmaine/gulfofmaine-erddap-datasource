@@ -314,7 +314,10 @@ func parseTableJSON(r io.Reader, frameName string) (*data.Frame, error) {
 		}
 
 		if unit != "" && unit != "UTC" {
-			field.Config = &data.FieldConfig{Unit: unit}
+			// Grafana reads FieldConfig.Unit as a unit ID, so a raw ERDDAP unit
+			// string like "m" would be formatted as minutes. The "suffix:" custom
+			// unit renders the text verbatim after the value instead.
+			field.Config = &data.FieldConfig{Unit: "suffix:" + unit}
 		}
 
 		frame.Fields = append(frame.Fields, field)

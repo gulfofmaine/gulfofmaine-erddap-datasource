@@ -250,8 +250,10 @@ func TestParseTableJSON(t *testing.T) {
 	if tempField.Name != "temperature" {
 		t.Errorf("expected field name 'temperature', got %q", tempField.Name)
 	}
-	if tempField.Config == nil || tempField.Config.Unit != "degree_C" {
-		t.Errorf("expected temperature Config.Unit = degree_C, got %+v", tempField.Config)
+	// "suffix:" marks the unit as a verbatim display string: a raw ERDDAP unit
+	// like "m" would otherwise be read as a Grafana unit ID (minutes).
+	if tempField.Config == nil || tempField.Config.Unit != "suffix:degree_C" {
+		t.Errorf("expected temperature Config.Unit = suffix:degree_C, got %+v", tempField.Config)
 	}
 	wantTemp := []float64{8.2, 8.5, 9.1}
 	for i, want := range wantTemp {
