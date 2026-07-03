@@ -3,12 +3,13 @@
 This plugin allows ERDDAP tabledap datasets to act as Grafana data sources including backend tasks such as alerting.
 
 Configuration:
+
 - Datasource level
-   - ERDDAP base URL
+  - ERDDAP base URL
 - Per query
-   - Dataset ID
-   - Variable
-   - Constraints
+  - Dataset ID
+  - Variable
+  - Constraints
 
 This template is a starting point for building a Data Source Plugin for Grafana.
 
