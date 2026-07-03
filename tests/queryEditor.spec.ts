@@ -3,26 +3,28 @@ import { test, expect } from '@grafana/plugin-e2e';
 test('smoke: should render query editor', async ({ panelEditPage, readProvisionedDataSource }) => {
   const ds = await readProvisionedDataSource({ fileName: 'datasources.yml' });
   await panelEditPage.datasource.set(ds.name);
-  await expect(panelEditPage.getQueryEditorRow('A').getByRole('textbox', { name: 'Query Text' })).toBeVisible();
+  const row = panelEditPage.getQueryEditorRow('A');
+  await expect(row.getByRole('textbox', { name: 'Dataset ID' })).toBeVisible();
+  await expect(row.getByRole('textbox', { name: 'Variables' })).toBeVisible();
+  await expect(row.getByRole('textbox', { name: 'Constraints' })).toBeVisible();
 });
 
-test('should trigger new query when Constant field is changed', async ({
+test('should trigger new query when Dataset ID and Variables are set', async ({
   panelEditPage,
   readProvisionedDataSource,
 }) => {
   const ds = await readProvisionedDataSource({ fileName: 'datasources.yml' });
   await panelEditPage.datasource.set(ds.name);
-  await panelEditPage.getQueryEditorRow('A').getByRole('textbox', { name: 'Query Text' }).fill('test query');
-  const queryReq = panelEditPage.waitForQueryDataRequest();
-  await panelEditPage.getQueryEditorRow('A').getByRole('spinbutton').fill('10');
-  await expect(await queryReq).toBeTruthy();
-});
+  const row = panelEditPage.getQueryEditorRow('A');
 
-test('data query should return values 10 and 20', async ({ panelEditPage, readProvisionedDataSource }) => {
-  const ds = await readProvisionedDataSource({ fileName: 'datasources.yml' });
-  await panelEditPage.datasource.set(ds.name);
-  await panelEditPage.getQueryEditorRow('A').getByRole('textbox', { name: 'Query Text' }).fill('test query');
-  await panelEditPage.setVisualization('Table');
-  await expect(panelEditPage.refreshPanel()).toBeOK();
-  await expect(panelEditPage.panel.data).toContainText(['10', '20']);
+  // filterQuery requires both datasetId and variables to be non-blank before a
+  // request is issued, so filling Dataset ID alone must not trigger a request.
+  await row.getByRole('textbox', { name: 'Dataset ID' }).fill('testDataset');
+  await row.getByRole('textbox', { name: 'Dataset ID' }).blur();
+
+  const queryReq = panelEditPage.waitForQueryDataRequest();
+  await row.getByRole('textbox', { name: 'Variables' }).fill('temperature');
+  await row.getByRole('textbox', { name: 'Variables' }).blur();
+
+  await expect(await queryReq).toBeTruthy();
 });
