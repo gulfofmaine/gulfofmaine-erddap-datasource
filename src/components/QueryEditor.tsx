@@ -2,42 +2,43 @@ import React, { ChangeEvent } from 'react';
 import { InlineField, Input, Stack } from '@grafana/ui';
 import { QueryEditorProps } from '@grafana/data';
 import { DataSource } from '../datasource';
-import { MyDataSourceOptions, MyQuery } from '../types';
+import { ErddapDataSourceOptions, ErddapQuery } from '../types';
 
-type Props = QueryEditorProps<DataSource, MyQuery, MyDataSourceOptions>;
+type Props = QueryEditorProps<DataSource, ErddapQuery, ErddapDataSourceOptions>;
 
 export function QueryEditor({ query, onChange, onRunQuery }: Props) {
-  const onQueryTextChange = (event: ChangeEvent<HTMLInputElement>) => {
-    onChange({ ...query, queryText: event.target.value });
+  const onDatasetIdChange = (event: ChangeEvent<HTMLInputElement>) => {
+    onChange({ ...query, datasetId: event.target.value });
   };
 
-  const onConstantChange = (event: ChangeEvent<HTMLInputElement>) => {
-    onChange({ ...query, constant: parseFloat(event.target.value) });
-    // executes the query
-    onRunQuery();
+  const onVariablesChange = (event: ChangeEvent<HTMLInputElement>) => {
+    onChange({ ...query, variables: event.target.value });
   };
 
-  const { queryText, constant } = query;
+  const onConstraintsChange = (event: ChangeEvent<HTMLInputElement>) => {
+    onChange({ ...query, constraints: event.target.value });
+  };
+
+  const { datasetId, variables, constraints } = query;
 
   return (
-    <Stack gap={0}>
-      <InlineField label="Constant">
-        <Input
-          id="query-editor-constant"
-          onChange={onConstantChange}
-          value={constant}
-          width={8}
-          type="number"
-          step="0.1"
-        />
+    <Stack direction="column">
+      <InlineField label="Dataset ID" labelWidth={16}>
+        <Input id="query-editor-dataset-id" onChange={onDatasetIdChange} onBlur={onRunQuery} value={datasetId || ''} />
       </InlineField>
-      <InlineField label="Query Text" labelWidth={16} tooltip="Not used yet">
+      <InlineField
+        label="Variables"
+        labelWidth={16}
+        tooltip="Comma-separated variable names; time is added automatically"
+      >
+        <Input id="query-editor-variables" onChange={onVariablesChange} onBlur={onRunQuery} value={variables || ''} />
+      </InlineField>
+      <InlineField label="Constraints" labelWidth={16} tooltip='Optional, e.g. station="A01"&depth<2'>
         <Input
-          id="query-editor-query-text"
-          onChange={onQueryTextChange}
-          value={queryText || ''}
-          required
-          placeholder="Enter a query"
+          id="query-editor-constraints"
+          onChange={onConstraintsChange}
+          onBlur={onRunQuery}
+          value={constraints || ''}
         />
       </InlineField>
     </Stack>
