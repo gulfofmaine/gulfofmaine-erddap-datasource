@@ -8,6 +8,11 @@ repos:
         args: [--markdown-linebreak-ext=md]
       - id: end-of-file-fixer
 
+  - repo: https://github.com/rbubley/mirrors-prettier
+    rev: 'v3.3.3'
+    hooks:
+      - id: prettier
+
   - repo: local
     hooks:
       - id: gofmt
@@ -15,11 +20,6 @@ repos:
         language: system
         entry: gofmt -l -w
         files: \.go$
-      - id: prettier
-        name: prettier
-        language: system
-        entry: npx --no-install prettier --write --ignore-unknown
-        files: \.(ts|tsx|js|jsx|mjs|json|css|scss|md|yaml|yml)$
       - id: golangci-lint
         name: golangci-lint
         language: system
