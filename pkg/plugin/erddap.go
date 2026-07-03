@@ -2,11 +2,14 @@ package plugin
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"net/url"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -16,6 +19,25 @@ import (
 	"github.com/grafana/grafana-plugin-sdk-go/data"
 	"github.com/gulfofmaine/erddap/pkg/models"
 )
+
+// erddapNoDataMessage is the substring ERDDAP includes in the "message" of
+// its 404 response body when a syntactically valid query matches zero rows.
+// Any other 404 (e.g. an unknown datasetID) does not contain this substring
+// and is treated as a downstream error instead.
+const erddapNoDataMessage = "Your query produced no matching results"
+
+// erddapMessageRe extracts the message="..." field from ERDDAP's canonical
+// plain-text error body, e.g.:
+//
+//	Error {
+//	    code=404;
+//	    message="Not Found: Your query produced no matching results. (nRows = 0)";
+//	}
+var erddapMessageRe = regexp.MustCompile(`message="([^"]*)"`)
+
+// maxFallbackMessageLen bounds the fallback error message when an ERDDAP
+// error body doesn't match the expected message="..." shape.
+const maxFallbackMessageLen = 500
 
 // erddapStructuralChars are ERDDAP query-string characters that are kept
 // literal (unescaped) by escapeERDDAP even though they fall outside the
@@ -279,4 +301,75 @@ func parseStringCell(raw json.RawMessage) *string {
 	}
 
 	return &s
+}
+
+// fetch issues the ERDDAP tabledap request at url and decodes the result
+// into a data.Frame named after qm.DatasetID.
+//
+//   - A transport-level failure (DNS, connection refused, timeout, ...) is
+//     wrapped as a backend.DownstreamError.
+//   - HTTP 404 whose body contains ERDDAP's canonical "no matching results"
+//     message is not an error: it returns an empty frame with the same
+//     typed fields (time + one []*float64 per requested variable) a
+//     successful query would have, so panels render "No data" instead of
+//     an error.
+//   - Any other non-200 response has its message="..." extracted from the
+//     body (falling back to a trimmed body prefix) and is wrapped with
+//     backend.NewErrorWithSource, deriving the ErrorSource from the HTTP
+//     status code.
+func (d *Datasource) fetch(ctx context.Context, url string, qm models.QueryModel) (*data.Frame, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, backend.DownstreamError(err)
+	}
+
+	resp, err := d.httpClient.Do(req)
+	if err != nil {
+		return nil, backend.DownstreamError(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusOK {
+		return parseTableJSON(resp.Body, qm.DatasetID)
+	}
+
+	body, _ := io.ReadAll(resp.Body)
+	message := extractERDDAPMessage(body)
+
+	if resp.StatusCode == http.StatusNotFound && strings.Contains(message, erddapNoDataMessage) {
+		return emptyTypedFrame(qm), nil
+	}
+
+	return nil, backend.NewErrorWithSource(errors.New(message), backend.ErrorSourceFromHTTPStatus(resp.StatusCode))
+}
+
+// extractERDDAPMessage pulls the message="..." field out of an ERDDAP error
+// body. If the body doesn't match that shape, it falls back to a trimmed
+// prefix of the raw body (bounded to maxFallbackMessageLen bytes).
+func extractERDDAPMessage(body []byte) string {
+	if m := erddapMessageRe.FindSubmatch(body); m != nil {
+		return string(m[1])
+	}
+
+	s := strings.TrimSpace(string(body))
+	if len(s) > maxFallbackMessageLen {
+		s = s[:maxFallbackMessageLen]
+	}
+	return s
+}
+
+// emptyTypedFrame builds the zero-row frame returned when an ERDDAP query is
+// valid but matches no rows: a time field plus one []*float64 field per
+// user-requested variable (the auto-prepended "time" entry from
+// cleanVariables is not counted twice).
+func emptyTypedFrame(qm models.QueryModel) *data.Frame {
+	variables := cleanVariables(qm.Variables)
+
+	frame := data.NewFrame(qm.DatasetID)
+	frame.Fields = append(frame.Fields, data.NewField("time", nil, []time.Time{}))
+	for _, v := range variables[1:] {
+		frame.Fields = append(frame.Fields, data.NewField(v, nil, []*float64{}))
+	}
+
+	return frame
 }
