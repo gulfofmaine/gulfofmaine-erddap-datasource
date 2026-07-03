@@ -2,16 +2,23 @@ exclude: '^(\.config/|dist/|package-lock\.json$)'
 
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v6.0.0
+    rev: 3e8a8703264a2f4a69428a0aa4dcb512790b2c8c # frozen: v6.0.0
     hooks:
       - id: trailing-whitespace
         args: [--markdown-linebreak-ext=md]
       - id: end-of-file-fixer
 
   - repo: https://github.com/rbubley/mirrors-prettier
-    rev: 'v3.3.3'
+    rev: '06507ab9500d4a9919b5ebd76d9d5b7074f15c1f' # frozen: v3.8.4
     hooks:
       - id: prettier
+
+  - repo: https://github.com/zizmorcore/zizmor-pre-commit
+    rev: e3eebf65325ccc992422292cb7a4baee967cf815 # frozen: v1.26.1
+    hooks:
+      - id: zizmor
+        files: "^\\.github"
+        args: [--persona=pedantic]
 
   - repo: local
     hooks:
@@ -26,3 +33,6 @@ repos:
         entry: golangci-lint run ./...
         files: \.go$
         pass_filenames: false
+
+auto_update:
+  cooldown_days: 7

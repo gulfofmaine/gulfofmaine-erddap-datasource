@@ -11,17 +11,24 @@ on:
 
 permissions:
   contents: read
-  pull-requests: write
-  actions: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   compare:
+    name: Compare bundle size
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write # to comment bundle size diff on the PR
+      actions: read # to download the base branch's bundle stats artifact
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
 
-      - uses: grafana/plugin-actions/bundle-size@bundle-size/v1.0.2
+      - uses: grafana/plugin-actions/bundle-size@a66a1c96cdbb176f9cccf10cf23593e250db7cce # bundle-size/v1.1.0
