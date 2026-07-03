@@ -123,7 +123,9 @@ func (d *Datasource) CheckHealth(ctx context.Context, _ *backend.CheckHealthRequ
 			Message: fmt.Sprintf("failed to connect to ERDDAP server: %s", err),
 		}, nil
 	}
-	defer resp.Body.Close()
+	defer func() {
+		_ = resp.Body.Close()
+	}()
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxDiagnosticBodyBytes))
 	if err != nil {

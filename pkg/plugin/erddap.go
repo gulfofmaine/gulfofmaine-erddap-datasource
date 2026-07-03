@@ -409,7 +409,9 @@ func (d *Datasource) fetch(ctx context.Context, url string, qm models.QueryModel
 	if err != nil {
 		return nil, backend.DownstreamError(err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		_ = resp.Body.Close()
+	}()
 
 	if resp.StatusCode == http.StatusOK {
 		frame, err := parseTableJSON(resp.Body, qm.DatasetID)
