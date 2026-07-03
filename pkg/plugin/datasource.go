@@ -2,115 +2,149 @@ package plugin
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"time"
+	"io"
+	"net/http"
+	"strings"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
+	"github.com/grafana/grafana-plugin-sdk-go/backend/httpclient"
 	"github.com/grafana/grafana-plugin-sdk-go/backend/instancemgmt"
 	"github.com/grafana/grafana-plugin-sdk-go/data"
+	"github.com/grafana/grafana-plugin-sdk-go/experimental/concurrent"
 	"github.com/gulfofmaine/erddap/pkg/models"
 )
 
 // Make sure Datasource implements required interfaces. This is important to do
 // since otherwise we will only get a not implemented error response from plugin in
-// runtime. In this example datasource instance implements backend.QueryDataHandler,
-// backend.CheckHealthHandler interfaces. Plugin should not implement all these
-// interfaces - only those which are required for a particular task.
+// runtime.
 var (
 	_ backend.QueryDataHandler      = (*Datasource)(nil)
 	_ backend.CheckHealthHandler    = (*Datasource)(nil)
 	_ instancemgmt.InstanceDisposer = (*Datasource)(nil)
 )
 
+// errBaseURLMissing is the exact CheckHealth error message asserted verbatim
+// by the frontend e2e test. handleQuery reuses it for the same underlying
+// condition (missing configuration) so the two code paths stay in sync.
+const errBaseURLMissing = "ERDDAP base URL is missing"
+
+// erddapVersionPrefix is the prefix of a healthy ERDDAP server's response
+// body at GET {base}/version.
+const erddapVersionPrefix = "ERDDAP_version="
+
+// Datasource queries an ERDDAP server's tabledap endpoints via the Grafana
+// plugin SDK.
+type Datasource struct {
+	settings   *models.PluginSettings
+	httpClient *http.Client
+}
+
 // NewDatasource creates a new datasource instance.
-func NewDatasource(_ context.Context, _ backend.DataSourceInstanceSettings) (instancemgmt.Instance, error) {
-	return &Datasource{}, nil
+func NewDatasource(ctx context.Context, settings backend.DataSourceInstanceSettings) (instancemgmt.Instance, error) {
+	pluginSettings, err := models.LoadPluginSettings(settings)
+	if err != nil {
+		return nil, err
+	}
+
+	opts, _ := settings.HTTPClientOptions(ctx)
+	httpClient, err := httpclient.New(opts)
+	if err != nil {
+		return nil, err
+	}
+
+	return &Datasource{
+		settings:   pluginSettings,
+		httpClient: httpClient,
+	}, nil
 }
 
-// Datasource is an example datasource which can respond to data queries, reports
-// its health and has streaming skills.
-type Datasource struct{}
-
-// Dispose here tells plugin SDK that plugin wants to clean up resources when a new instance
-// created. As soon as datasource settings change detected by SDK old datasource instance will
-// be disposed and a new one will be created using NewSampleDatasource factory function.
+// Dispose cleans up datasource instance resources when a new instance is
+// created (e.g. after datasource settings change).
 func (d *Datasource) Dispose() {
-	// Clean up datasource instance resources.
+	d.httpClient.CloseIdleConnections()
 }
 
-// QueryData handles multiple queries and returns multiple responses.
-// req contains the queries []DataQuery (where each query contains RefID as a unique identifier).
-// The QueryDataResponse contains a map of RefID to the response for each query, and each response
-// contains Frames ([]*Frame).
+// QueryData handles multiple queries and returns multiple responses,
+// executing up to 10 queries concurrently.
 func (d *Datasource) QueryData(ctx context.Context, req *backend.QueryDataRequest) (*backend.QueryDataResponse, error) {
-	// create response struct
-	response := backend.NewQueryDataResponse()
-
-	// loop over queries and execute them individually.
-	for _, q := range req.Queries {
-		res := d.query(ctx, req.PluginContext, q)
-
-		// save the response in a hashmap
-		// based on with RefID as identifier
-		response.Responses[q.RefID] = res
-	}
-
-	return response, nil
+	return concurrent.QueryData(ctx, req, d.handleQuery, 10)
 }
 
-type queryModel struct{}
-
-func (d *Datasource) query(_ context.Context, pCtx backend.PluginContext, query backend.DataQuery) backend.DataResponse {
-	var response backend.DataResponse
-
-	// Unmarshal the JSON into our queryModel.
-	var qm queryModel
-
-	err := json.Unmarshal(query.JSON, &qm)
+// handleQuery executes a single query against ERDDAP and returns the
+// resulting data.Frame wrapped in a backend.DataResponse.
+func (d *Datasource) handleQuery(ctx context.Context, q concurrent.Query) backend.DataResponse {
+	qm, err := models.LoadQueryModel(q.DataQuery.JSON)
 	if err != nil {
-		return backend.ErrDataResponse(backend.StatusBadRequest, fmt.Sprintf("json unmarshal: %v", err.Error()))
+		return backend.ErrDataResponse(backend.StatusBadRequest, err.Error())
 	}
 
-	// create data frame response.
-	// For an overview on data frames and how grafana handles them:
-	// https://grafana.com/developers/plugin-tools/introduction/data-frames
-	frame := data.NewFrame("response")
+	if d.settings == nil || d.settings.BaseURL == "" {
+		return backend.ErrDataResponse(backend.StatusBadRequest, errBaseURLMissing)
+	}
 
-	// add fields.
-	frame.Fields = append(frame.Fields,
-		data.NewField("time", nil, []time.Time{query.TimeRange.From, query.TimeRange.To}),
-		data.NewField("values", nil, []int64{10, 20}),
-	)
+	tabledapURL, err := buildTabledapURL(d.settings.BaseURL, *qm, q.DataQuery.TimeRange)
+	if err != nil {
+		return backend.ErrDataResponse(backend.StatusBadRequest, err.Error())
+	}
 
-	// add the frames to the response.
-	response.Frames = append(response.Frames, frame)
+	frame, err := d.fetch(ctx, tabledapURL, *qm)
+	if err != nil {
+		return backend.ErrorResponseWithErrorSource(err)
+	}
 
-	return response
+	return backend.DataResponse{Frames: data.Frames{frame}}
 }
 
-// CheckHealth handles health checks sent from Grafana to the plugin.
-// The main use case for these health checks is the test button on the
-// datasource configuration page which allows users to verify that
-// a datasource is working as expected.
-func (d *Datasource) CheckHealth(_ context.Context, req *backend.CheckHealthRequest) (*backend.CheckHealthResult, error) {
-	res := &backend.CheckHealthResult{}
-	config, err := models.LoadPluginSettings(*req.PluginContext.DataSourceInstanceSettings)
-
-	if err != nil {
-		res.Status = backend.HealthStatusError
-		res.Message = "Unable to load settings"
-		return res, nil
+// CheckHealth handles health checks sent from Grafana to the plugin. The
+// main use case for these health checks is the test button on the
+// datasource configuration page which allows users to verify that a
+// datasource is working as expected.
+func (d *Datasource) CheckHealth(ctx context.Context, _ *backend.CheckHealthRequest) (*backend.CheckHealthResult, error) {
+	if d.settings == nil || d.settings.BaseURL == "" {
+		return &backend.CheckHealthResult{
+			Status:  backend.HealthStatusError,
+			Message: errBaseURLMissing,
+		}, nil
 	}
 
-	if config.Secrets.ApiKey == "" {
-		res.Status = backend.HealthStatusError
-		res.Message = "API key is missing"
-		return res, nil
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, d.settings.BaseURL+"/version", nil)
+	if err != nil {
+		return &backend.CheckHealthResult{
+			Status:  backend.HealthStatusError,
+			Message: fmt.Sprintf("failed to build request: %s", err),
+		}, nil
+	}
+
+	resp, err := d.httpClient.Do(req)
+	if err != nil {
+		return &backend.CheckHealthResult{
+			Status:  backend.HealthStatusError,
+			Message: fmt.Sprintf("failed to connect to ERDDAP server: %s", err),
+		}, nil
+	}
+	defer func() {
+		_ = resp.Body.Close()
+	}()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxDiagnosticBodyBytes))
+	if err != nil {
+		return &backend.CheckHealthResult{
+			Status:  backend.HealthStatusError,
+			Message: fmt.Sprintf("failed to read response from ERDDAP server: %s", err),
+		}, nil
+	}
+
+	trimmed := strings.TrimSpace(string(body))
+	if resp.StatusCode == http.StatusOK && strings.HasPrefix(trimmed, erddapVersionPrefix) {
+		return &backend.CheckHealthResult{
+			Status:  backend.HealthStatusOk,
+			Message: "Connected to " + trimmed,
+		}, nil
 	}
 
 	return &backend.CheckHealthResult{
-		Status:  backend.HealthStatusOk,
-		Message: "Data source is working",
+		Status:  backend.HealthStatusError,
+		Message: fmt.Sprintf("URL does not appear to be an ERDDAP server (HTTP %d)", resp.StatusCode),
 	}, nil
 }

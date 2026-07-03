@@ -3,17 +3,13 @@ package models
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
 )
 
 type PluginSettings struct {
-	Path    string                `json:"path"`
-	Secrets *SecretPluginSettings `json:"-"`
-}
-
-type SecretPluginSettings struct {
-	ApiKey string `json:"apiKey"`
+	BaseURL string `json:"baseUrl"`
 }
 
 func LoadPluginSettings(source backend.DataSourceInstanceSettings) (*PluginSettings, error) {
@@ -23,13 +19,7 @@ func LoadPluginSettings(source backend.DataSourceInstanceSettings) (*PluginSetti
 		return nil, fmt.Errorf("could not unmarshal PluginSettings json: %w", err)
 	}
 
-	settings.Secrets = loadSecretPluginSettings(source.DecryptedSecureJSONData)
+	settings.BaseURL = strings.TrimRight(settings.BaseURL, "/")
 
 	return &settings, nil
-}
-
-func loadSecretPluginSettings(source map[string]string) *SecretPluginSettings {
-	return &SecretPluginSettings{
-		ApiKey: source["apiKey"],
-	}
 }

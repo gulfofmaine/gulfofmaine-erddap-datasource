@@ -2,3 +2,8 @@
 go = "latest"
 node = "latest"
 mage = "latest"
+golangci-lint = "latest"
+prek = "latest"
+
+[settings]
+lockfile = true
