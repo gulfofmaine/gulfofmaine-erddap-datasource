@@ -7,11 +7,11 @@
   "backend": true,
   "executable": "gpx_erddap",
   "info": {
-    "description": "",
+    "description": "Query ERDDAP tabledap datasets as Grafana time series, with queries executed in the backend so alerting works.",
     "author": {
       "name": "Gulfofmaine"
     },
-    "keywords": ["datasource"],
+    "keywords": ["datasource", "erddap", "tabledap", "oceanography", "timeseries"],
     "logos": {
       "small": "img/logo.svg",
       "large": "img/logo.svg"

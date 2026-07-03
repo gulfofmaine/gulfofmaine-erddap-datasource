@@ -1,147 +1,85 @@
 # Grafana ERDDAP data source plugin
 
-This plugin allows ERDDAP tabledap datasets to act as Grafana data sources including backend tasks such as alerting.
+This plugin lets [ERDDAP](https://www.ncei.noaa.gov/erddap/information.html) **tabledap** datasets act as
+Grafana data sources. Queries are executed in the Go backend (not the browser), so this datasource also
+works with Grafana alerting.
 
-Configuration:
+Only public ERDDAP servers are supported: there is no API key or credential handling, and requests are
+made as anonymous GETs against the configured ERDDAP base URL.
 
-- Datasource level
-  - ERDDAP base URL
-- Per query
-  - Dataset ID
-  - Variable
-  - Constraints
+## Configuration
 
-This template is a starting point for building a Data Source Plugin for Grafana.
+The datasource has a single setting:
 
-## What are Grafana data source plugins?
+| Field           | Description                                                                                                                             |
+| --------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| ERDDAP base URL | The root URL of the ERDDAP install, e.g. `https://data.neracoos.org/erddap` (no trailing slash needed — one is stripped automatically). |
 
-Grafana supports a wide range of data sources, including Prometheus, MySQL, and even Datadog. There’s a good chance you can already visualize metrics from the systems you have set up. In some cases, though, you already have an in-house metrics solution that you’d like to add to your Grafana dashboards. Grafana Data Source Plugins enables integrating such solutions with Grafana.
+Use the "Save & test" button on the datasource configuration page to verify Grafana can reach the server:
+it issues a `GET {baseUrl}/version` request and checks the response looks like ERDDAP's version endpoint.
 
-## Getting started
+## Query editor
 
-### Backend
+Each panel query has three fields:
 
-1. Update [Grafana plugin SDK for Go](https://grafana.com/developers/plugin-tools/key-concepts/backend-plugins/grafana-plugin-sdk-for-go) dependency to the latest minor version:
+| Field       | Required | Description                                                                                                                                                                                                 |
+| ----------- | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Dataset ID  | Yes      | The tabledap dataset ID, e.g. `M01_sbe37_all`.                                                                                                                                                              |
+| Variables   | Yes      | Comma-separated variable (column) names to request, e.g. `temperature, salinity`. `time` is always requested automatically and does not need to be listed — if you do include it, the duplicate is dropped. |
+| Constraints | No       | A raw ERDDAP constraint expression, appended to the request as-is (after escaping), e.g. `station="A01"&depth<2`.                                                                                           |
 
-   ```bash
-   go get -u github.com/grafana/grafana-plugin-sdk-go
-   go mod tidy
-   ```
+### Worked example
 
-2. Build plugin backend binaries for Linux, Windows and Darwin:
+For a dataset `M01_sbe37_all` with:
 
-   ```bash
-   mage -v
-   ```
+- Variables: `temperature, salinity`
+- Constraints: `station="A01"&depth<2`
+- Dashboard time range: the last 24 hours
 
-3. List all available Mage targets for additional commands:
+the plugin sends this request (`>`, `<`, and `"` are percent-encoded; `&`, `,`, and `=` are left literal since
+ERDDAP uses them as query-string structure):
 
-   ```bash
-   mage -l
-   ```
+```
+GET {baseUrl}/tabledap/M01_sbe37_all.json?time,temperature,salinity&time%3E=2026-07-01T12:00:00Z&time%3C=2026-07-02T12:00:00Z&station=%22A01%22&depth%3C2
+```
 
-### Frontend
+The response is returned as a single Grafana time series frame with one field per requested variable, plus
+`time`.
 
-1. Install dependencies
+### Time range
 
-   ```bash
-   npm install
-   ```
+The dashboard's time range is always translated into `time>=<from>&time<=<to>` constraints, using RFC3339
+timestamps in UTC (`Z` suffix). There is no way to omit the time range from a query.
 
-2. Build plugin in development mode and run in watch mode
+### Constraints caveat: literal `&` in a quoted value
 
-   ```bash
-   npm run dev
-   ```
+Because `&` is the separator between constraints, a literal `&` that needs to appear _inside_ a quoted
+string value (e.g. a station name containing an ampersand) must be pre-percent-encoded by the user as
+`%26` in the Constraints field. Any other `&` is treated as a constraint separator.
 
-3. Build plugin in production mode
+### No matching results
 
-   ```bash
-   npm run build
-   ```
+If ERDDAP reports that a query is valid but matches no rows, the plugin returns an empty result rather
+than an error — panels will show "No data" instead of an error state.
 
-4. Run the tests (using Jest)
+## Development
 
-   ```bash
-   # Runs the tests and watches for changes, requires git init first
-   npm run test
+```bash
+npm install          # install frontend dependencies
+npm run dev           # build the frontend in watch mode
+npm run build         # production frontend build
+mage -v               # build the Go backend (requires Go and mage)
+go test ./...         # backend unit tests
+npm run test:ci       # frontend unit tests
+npm run server        # run a Grafana instance in Docker with this plugin loaded (localhost:3000)
+npm run e2e           # end-to-end tests (run `npm run server` first)
+```
 
-   # Exits after running all the tests
-   npm run test:ci
-   ```
+The backend binary is only rebuilt by `mage -v`; after rebuilding it, restart the Grafana container (e.g.
+`npm run server` again) to pick up the new binary.
 
-5. Spin up a Grafana instance and run the plugin inside it (using Docker)
+To check against the minimum supported Grafana version:
 
-   ```bash
-   npm run server
-   ```
-
-6. Run the E2E tests (using Playwright)
-
-   ```bash
-   # Spins up a Grafana instance first that we tests against
-   npm run server
-
-   # If you wish to start a certain Grafana version. If not specified will use latest by default
-   GRAFANA_VERSION=11.3.0 npm run server
-
-   # Starts the tests
-   npm run e2e
-   ```
-
-7. Run the linter
-
-   ```bash
-   npm run lint
-
-   # or
-
-   npm run lint:fix
-   ```
-
-# Distributing your plugin
-
-When distributing a Grafana plugin either within the community or privately the plugin must be signed so the Grafana application can verify its authenticity. This can be done with the `@grafana/sign-plugin` package.
-
-_Note: It's not necessary to sign a plugin during development. The docker development environment that is scaffolded with `@grafana/create-plugin` caters for running the plugin without a signature._
-
-## Initial steps
-
-Before signing a plugin please read the Grafana [plugin publishing and signing criteria](https://grafana.com/legal/plugins/#plugin-publishing-and-signing-criteria) documentation carefully.
-
-`@grafana/create-plugin` has added the necessary commands and workflows to make signing and distributing a plugin via the grafana plugins catalog as straightforward as possible.
-
-Before signing a plugin for the first time please consult the Grafana [plugin signature levels](https://grafana.com/legal/plugins/#what-are-the-different-classifications-of-plugins) documentation to understand the differences between the types of signature level.
-
-1. Create a [Grafana Cloud account](https://grafana.com/signup).
-2. Make sure that the first part of the plugin ID matches the slug of your Grafana Cloud account.
-   - _You can find the plugin ID in the `plugin.json` file inside your plugin directory. For example, if your account slug is `acmecorp`, you need to prefix the plugin ID with `acmecorp-`._
-3. Create a Grafana Cloud API key with the `PluginPublisher` role.
-4. Keep a record of this API key as it will be required for signing a plugin
-
-## Signing a plugin
-
-### Using Github actions release workflow
-
-If the plugin is using the github actions supplied with `@grafana/create-plugin` signing a plugin is included out of the box. The [release workflow](./.github/workflows/release.yml) can prepare everything to make submitting your plugin to Grafana as easy as possible. Before being able to sign the plugin however a secret needs adding to the Github repository.
-
-1. Please navigate to "settings > secrets > actions" within your repo to create secrets.
-2. Click "New repository secret"
-3. Name the secret "GRAFANA_API_KEY"
-4. Paste your Grafana Cloud API key in the Secret field
-5. Click "Add secret"
-
-#### Push a version tag
-
-To trigger the workflow we need to push a version tag to github. This can be achieved with the following steps:
-
-1. Run `npm version <major|minor|patch>`
-2. Run `git push origin main --follow-tags`
-
-## Learn more
-
-Below you can find source code for existing app plugins and other related documentation.
-
-- [Basic data source plugin example](https://github.com/grafana/grafana-plugin-examples/tree/master/examples/datasource-basic#readme)
-- [`plugin.json` documentation](https://grafana.com/developers/plugin-tools/reference/plugin-json)
-- [How to sign a plugin?](https://grafana.com/developers/plugin-tools/publish-a-plugin/sign-a-plugin)
+```bash
+GRAFANA_VERSION=12.3.0 npm run server
+```
