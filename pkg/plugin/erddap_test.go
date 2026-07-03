@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
+	"github.com/grafana/grafana-plugin-sdk-go/data"
 	"github.com/gulfofmaine/erddap/pkg/models"
 )
 
@@ -214,7 +215,7 @@ func TestParseTableJSON(t *testing.T) {
 		}
 	}`
 
-	frame, err := parseTableJSON(strings.NewReader(body), "response")
+	frame, err := parseTableJSON(strings.NewReader(body), "response", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -305,5 +306,54 @@ func TestSortRowsByTime(t *testing.T) {
 		if !rows[i].time.Equal(w) {
 			t.Errorf("rows[%d].time = %v, want %v", i, rows[i].time, w)
 		}
+	}
+}
+
+func TestParseTableJSONWithMappings(t *testing.T) {
+	body := `{
+		"table": {
+			"columnNames": ["time", "temperature", "navd88_meters_qartod_gross_range_test"],
+			"columnTypes": ["String", "double", "int"],
+			"columnUnits": ["UTC", "degree_C", ""],
+			"rows": [
+				["2024-01-01T00:00:00Z", 8.2, 1],
+				["2024-01-01T01:00:00Z", 8.5, 3]
+			]
+		}
+	}`
+
+	mappings := map[string]data.ValueMappings{
+		"temperature": {data.ValueMapper{"8.2": {Text: "COLD"}}},
+		"navd88_meters_qartod_gross_range_test": {
+			data.ValueMapper{
+				"1": {Text: "GOOD", Color: "#73BF69"},
+				"3": {Text: "SUSPECT", Color: "#FF9830"},
+			},
+		},
+	}
+
+	frame, err := parseTableJSON(strings.NewReader(body), "response", mappings)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	tempField := frame.Fields[1]
+	if tempField.Config == nil || tempField.Config.Unit != "suffix:degree_C" {
+		t.Fatalf("expected temperature to keep its Unit config, got %+v", tempField.Config)
+	}
+	if tempField.Config.Mappings == nil {
+		t.Error("expected temperature Config.Mappings to be set alongside Unit")
+	}
+
+	flagField := frame.Fields[2]
+	if flagField.Config == nil || flagField.Config.Mappings == nil {
+		t.Fatalf("expected flag field to have Config.Mappings, got %+v", flagField.Config)
+	}
+	mapper, ok := flagField.Config.Mappings[0].(data.ValueMapper)
+	if !ok {
+		t.Fatalf("expected a data.ValueMapper, got %T", flagField.Config.Mappings[0])
+	}
+	if mapper["3"].Text != "SUSPECT" {
+		t.Errorf("expected value 3 = SUSPECT, got %+v", mapper["3"])
 	}
 }

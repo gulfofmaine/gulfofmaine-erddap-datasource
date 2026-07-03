@@ -12,3 +12,6 @@ Initial release.
 - Execute queries in the Go backend, so this datasource supports Grafana alerting.
 - Treat ERDDAP's "no matching results" response as an empty result rather than an error.
 - Add a "Save & test" health check that verifies the configured URL responds like an ERDDAP server.
+- Add Grafana value mappings for variables with CF `flag_values`/`flag_meanings` attributes (e.g.
+  QARTOD quality flags), so panels display the flag meaning and a conventional color instead of the raw
+  numeric code.

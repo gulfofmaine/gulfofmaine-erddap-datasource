@@ -67,6 +67,17 @@ quotes keep their structural meaning (`&` separates constraints, `,` separates v
 If ERDDAP reports that a query is valid but matches no rows, the plugin returns an empty result rather
 than an error — panels will show "No data" instead of an error state.
 
+### Quality-flag value mappings
+
+If a requested variable declares both the CF `flag_values` and `flag_meanings` attributes (as
+QARTOD quality-control variables typically do, e.g. `flag_meanings="GOOD UNKNOWN SUSPECT FAIL MISSING"`),
+the plugin fetches that information from `{baseUrl}/info/{datasetID}/index.json` and attaches Grafana
+value mappings to the field: `1` renders as "GOOD" (green), `3` as "SUSPECT" (orange), and so on. The
+underlying values remain numeric, so the field can still be plotted as a time series; tables, stat
+panels, and state timelines display the mapped text and color instead of the raw number. This metadata
+is cached per datasource instance for one hour. If the metadata can't be fetched or parsed, the query
+still succeeds — the field is just left without mappings.
+
 ## Development
 
 ```bash
