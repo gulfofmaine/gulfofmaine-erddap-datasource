@@ -88,7 +88,7 @@ func (d *Datasource) handleQuery(ctx context.Context, q concurrent.Query) backen
 		return backend.ErrDataResponse(backend.StatusBadRequest, err.Error())
 	}
 
-	frame, err := d.fetch(ctx, tabledapURL, *qm)
+	frame, err := d.fetch(ctx, tabledapURL, *qm, nil)
 	if err != nil {
 		return backend.ErrorResponseWithErrorSource(err)
 	}

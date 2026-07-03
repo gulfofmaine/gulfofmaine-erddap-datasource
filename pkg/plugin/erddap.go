@@ -241,7 +241,7 @@ func isUnreservedRune(r rune) bool {
 // "columnNames/columnTypes/columnUnits/rows" shape) into a data.Frame. Rows
 // are sorted ascending by their time column before fields are built, since
 // multi-station queries can return interleaved timestamps.
-func parseTableJSON(r io.Reader, frameName string) (*data.Frame, error) {
+func parseTableJSON(r io.Reader, frameName string, mappings map[string]data.ValueMappings) (*data.Frame, error) {
 	var resp erddapTableResponse
 	if err := json.NewDecoder(r).Decode(&resp); err != nil {
 		return nil, err
@@ -318,6 +318,13 @@ func parseTableJSON(r io.Reader, frameName string) (*data.Frame, error) {
 			// string like "m" would be formatted as minutes. The "suffix:" custom
 			// unit renders the text verbatim after the value instead.
 			field.Config = &data.FieldConfig{Unit: "suffix:" + unit}
+		}
+
+		if vm, ok := mappings[name]; ok {
+			if field.Config == nil {
+				field.Config = &data.FieldConfig{}
+			}
+			field.Config.Mappings = vm
 		}
 
 		frame.Fields = append(frame.Fields, field)
@@ -402,7 +409,7 @@ func parseStringCell(raw json.RawMessage) *string {
 //     the error is never blank) and is wrapped with
 //     backend.NewErrorWithSource, deriving the ErrorSource from the HTTP
 //     status code.
-func (d *Datasource) fetch(ctx context.Context, url string, qm models.QueryModel) (*data.Frame, error) {
+func (d *Datasource) fetch(ctx context.Context, url string, qm models.QueryModel, mappings map[string]data.ValueMappings) (*data.Frame, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, backend.DownstreamError(err)
@@ -417,7 +424,7 @@ func (d *Datasource) fetch(ctx context.Context, url string, qm models.QueryModel
 	}()
 
 	if resp.StatusCode == http.StatusOK {
-		frame, err := parseTableJSON(resp.Body, qm.DatasetID)
+		frame, err := parseTableJSON(resp.Body, qm.DatasetID, mappings)
 		if err != nil {
 			return nil, backend.DownstreamError(fmt.Errorf("erddap: parsing response: %w", err))
 		}
@@ -431,7 +438,7 @@ func (d *Datasource) fetch(ctx context.Context, url string, qm models.QueryModel
 	}
 
 	if resp.StatusCode == http.StatusNotFound && strings.Contains(message, erddapNoDataMessage) {
-		return emptyTypedFrame(qm), nil
+		return emptyTypedFrame(qm, mappings), nil
 	}
 
 	return nil, backend.NewErrorWithSource(errors.New(message), backend.ErrorSourceFromHTTPStatus(resp.StatusCode))
@@ -456,13 +463,17 @@ func extractERDDAPMessage(body []byte) string {
 // valid but matches no rows: a time field plus one []*float64 field per
 // user-requested variable (the auto-prepended "time" entry from
 // cleanVariables is not counted twice).
-func emptyTypedFrame(qm models.QueryModel) *data.Frame {
+func emptyTypedFrame(qm models.QueryModel, mappings map[string]data.ValueMappings) *data.Frame {
 	variables := cleanVariables(qm.Variables)
 
 	frame := data.NewFrame(qm.DatasetID)
 	frame.Fields = append(frame.Fields, data.NewField("time", nil, []time.Time{}))
 	for _, v := range variables[1:] {
-		frame.Fields = append(frame.Fields, data.NewField(v, nil, []*float64{}))
+		field := data.NewField(v, nil, []*float64{})
+		if vm, ok := mappings[v]; ok {
+			field.Config = &data.FieldConfig{Mappings: vm}
+		}
+		frame.Fields = append(frame.Fields, field)
 	}
 
 	return frame
