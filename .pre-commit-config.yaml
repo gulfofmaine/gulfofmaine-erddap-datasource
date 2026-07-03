@@ -1,0 +1,28 @@
+exclude: '^(\.config/|dist/|package-lock\.json$)'
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+        args: [--markdown-linebreak-ext=md]
+      - id: end-of-file-fixer
+
+  - repo: local
+    hooks:
+      - id: gofmt
+        name: gofmt
+        language: system
+        entry: gofmt -l -w
+        files: \.go$
+      - id: prettier
+        name: prettier
+        language: system
+        entry: npx --no-install prettier --write --ignore-unknown
+        files: \.(ts|tsx|js|jsx|mjs|json|css|scss|md|yaml|yml)$
+      - id: golangci-lint
+        name: golangci-lint
+        language: system
+        entry: golangci-lint run ./...
+        files: \.go$
+        pass_filenames: false
