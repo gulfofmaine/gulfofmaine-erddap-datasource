@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
+	"github.com/grafana/grafana-plugin-sdk-go/data"
 	"github.com/gulfofmaine/erddap/pkg/models"
 )
 
@@ -16,6 +17,12 @@ func TestQueryData(t *testing.T) {
 	var gotPath, gotRawQuery string
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/info/") {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"table": {"columnNames": ["Row Type", "Variable Name", "Attribute Name", "Data Type", "Value"], "rows": []}}`))
+			return
+		}
+
 		gotPath = r.URL.Path
 		gotRawQuery = r.URL.RawQuery
 
@@ -35,8 +42,9 @@ func TestQueryData(t *testing.T) {
 	defer srv.Close()
 
 	ds := Datasource{
-		settings:   &models.PluginSettings{BaseURL: srv.URL},
-		httpClient: srv.Client(),
+		settings:     &models.PluginSettings{BaseURL: srv.URL},
+		httpClient:   srv.Client(),
+		flagMappings: newFlagMappingsCache(),
 	}
 
 	req := &backend.QueryDataRequest{
@@ -96,8 +104,9 @@ func TestQueryDataNoData(t *testing.T) {
 	defer srv.Close()
 
 	ds := Datasource{
-		settings:   &models.PluginSettings{BaseURL: srv.URL},
-		httpClient: srv.Client(),
+		settings:     &models.PluginSettings{BaseURL: srv.URL},
+		httpClient:   srv.Client(),
+		flagMappings: newFlagMappingsCache(),
 	}
 
 	req := &backend.QueryDataRequest{
@@ -144,8 +153,9 @@ func TestQueryDataServerError(t *testing.T) {
 	defer srv.Close()
 
 	ds := Datasource{
-		settings:   &models.PluginSettings{BaseURL: srv.URL},
-		httpClient: srv.Client(),
+		settings:     &models.PluginSettings{BaseURL: srv.URL},
+		httpClient:   srv.Client(),
+		flagMappings: newFlagMappingsCache(),
 	}
 
 	req := &backend.QueryDataRequest{
@@ -179,8 +189,9 @@ func TestQueryDataEmptyErrorBody(t *testing.T) {
 	defer srv.Close()
 
 	ds := Datasource{
-		settings:   &models.PluginSettings{BaseURL: srv.URL},
-		httpClient: srv.Client(),
+		settings:     &models.PluginSettings{BaseURL: srv.URL},
+		httpClient:   srv.Client(),
+		flagMappings: newFlagMappingsCache(),
 	}
 
 	req := &backend.QueryDataRequest{
@@ -214,8 +225,9 @@ func TestQueryDataMalformedOKBody(t *testing.T) {
 	defer srv.Close()
 
 	ds := Datasource{
-		settings:   &models.PluginSettings{BaseURL: srv.URL},
-		httpClient: srv.Client(),
+		settings:     &models.PluginSettings{BaseURL: srv.URL},
+		httpClient:   srv.Client(),
+		flagMappings: newFlagMappingsCache(),
 	}
 
 	req := &backend.QueryDataRequest{
@@ -356,4 +368,78 @@ func TestCheckHealth(t *testing.T) {
 			t.Errorf("expected HealthStatusError, got %v", res.Status)
 		}
 	})
+}
+
+func TestQueryDataWithFlagMappings(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/info/") {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{
+				"table": {
+					"columnNames": ["Row Type", "Variable Name", "Attribute Name", "Data Type", "Value"],
+					"rows": [
+						["variable", "navd88_meters_qartod_gross_range_test", "", "int", ""],
+						["attribute", "navd88_meters_qartod_gross_range_test", "flag_meanings", "String", "GOOD UNKNOWN SUSPECT FAIL MISSING"],
+						["attribute", "navd88_meters_qartod_gross_range_test", "flag_values", "long", "1, 2, 3, 4, 9"]
+					]
+				}
+			}`))
+			return
+		}
+
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{
+			"table": {
+				"columnNames": ["time", "navd88_meters_qartod_gross_range_test"],
+				"columnTypes": ["String", "int"],
+				"columnUnits": ["UTC", ""],
+				"rows": [
+					["2024-01-01T00:00:00Z", 1],
+					["2024-01-01T01:00:00Z", 3]
+				]
+			}
+		}`))
+	}))
+	defer srv.Close()
+
+	ds := Datasource{
+		settings:     &models.PluginSettings{BaseURL: srv.URL},
+		httpClient:   srv.Client(),
+		flagMappings: newFlagMappingsCache(),
+	}
+
+	req := &backend.QueryDataRequest{
+		Queries: []backend.DataQuery{
+			{
+				RefID: "A",
+				JSON:  []byte(`{"datasetId": "foo", "variables": "navd88_meters_qartod_gross_range_test", "constraints": ""}`),
+			},
+		},
+	}
+
+	resp, err := ds.QueryData(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	dr := resp.Responses["A"]
+	if dr.Error != nil {
+		t.Fatalf("unexpected DataResponse error: %v", dr.Error)
+	}
+
+	flagField := dr.Frames[0].Fields[1]
+	if flagField.Config == nil || flagField.Config.Mappings == nil {
+		t.Fatalf("expected flag field to have Config.Mappings, got %+v", flagField.Config)
+	}
+
+	mapper, ok := flagField.Config.Mappings[0].(data.ValueMapper)
+	if !ok {
+		t.Fatalf("expected a data.ValueMapper, got %T", flagField.Config.Mappings[0])
+	}
+	if mapper["1"].Text != "GOOD" {
+		t.Errorf("expected value 1 = GOOD, got %+v", mapper["1"])
+	}
+	if mapper["3"].Text != "SUSPECT" {
+		t.Errorf("expected value 3 = SUSPECT, got %+v", mapper["3"])
+	}
 }
