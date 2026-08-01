@@ -9,12 +9,12 @@ repos:
       - id: end-of-file-fixer
 
   - repo: https://github.com/rbubley/mirrors-prettier
-    rev: '06507ab9500d4a9919b5ebd76d9d5b7074f15c1f' # frozen: v3.8.4
+    rev: '0ee178619d696787ca73d210cc191d720868c631' # frozen: v3.9.6
     hooks:
       - id: prettier
 
   - repo: https://github.com/zizmorcore/zizmor-pre-commit
-    rev: e3eebf65325ccc992422292cb7a4baee967cf815 # frozen: v1.26.1
+    rev: 067260dc5fe6ea86b7551bfd6f8b3ba4e6c93129 # frozen: v1.28.0
     hooks:
       - id: zizmor
         files: "^\\.github"
