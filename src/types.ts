@@ -15,3 +15,33 @@ export const DEFAULT_QUERY: Partial<ErddapQuery> = {};
 export interface ErddapDataSourceOptions extends DataSourceJsonData {
   baseUrl?: string;
 }
+
+/**
+ * A dataset as returned by the `/datasets` discovery endpoint.
+ */
+export interface ErddapDatasetSummary {
+  id: string;
+  title?: string;
+  institution?: string;
+  summary?: string;
+  tabledapSupported: boolean;
+}
+
+/**
+ * A variable as returned by the `/variables` discovery endpoint.
+ */
+export interface ErddapVariable {
+  name: string;
+  type: string;
+  units?: string;
+  longName?: string;
+}
+
+export interface DatasetSearchResponse {
+  datasets: ErddapDatasetSummary[];
+  truncated: boolean;
+}
+
+export interface VariablesResponse {
+  variables: ErddapVariable[];
+}

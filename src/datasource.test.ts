@@ -30,3 +30,39 @@ describe('filterQuery', () => {
     expect(ds.filterQuery(query(datasetId, variables))).toBe(expected);
   });
 });
+
+describe('discovery resource calls', () => {
+  let getResource: jest.SpyInstance;
+
+  beforeEach(() => {
+    getResource = jest.spyOn(DataSource.prototype, 'getResource').mockResolvedValue({});
+  });
+
+  afterEach(() => {
+    getResource.mockRestore();
+  });
+
+  it('searchDatasets calls the datasets resource with the search text and default limit', async () => {
+    const ds = createDataSource();
+    await ds.searchDatasets('temp');
+    expect(getResource).toHaveBeenCalledWith('datasets', { q: 'temp', limit: 100 });
+  });
+
+  it('searchDatasets forwards an explicit limit', async () => {
+    const ds = createDataSource();
+    await ds.searchDatasets('temp', 5);
+    expect(getResource).toHaveBeenCalledWith('datasets', { q: 'temp', limit: 5 });
+  });
+
+  it('getVariables calls the variables resource with the dataset id', async () => {
+    const ds = createDataSource();
+    await ds.getVariables('M01');
+    expect(getResource).toHaveBeenCalledWith('variables', { datasetId: 'M01' });
+  });
+
+  it('propagates rejections from getResource', async () => {
+    getResource.mockRejectedValue(new Error('boom'));
+    const ds = createDataSource();
+    await expect(ds.getVariables('M01')).rejects.toThrow('boom');
+  });
+});
