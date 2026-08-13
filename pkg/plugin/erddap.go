@@ -115,7 +115,7 @@ func buildTabledapURL(baseURL string, qm models.QueryModel, tr backend.TimeRange
 		escapeERDDAP("time<=" + tr.To.UTC().Format(time.RFC3339)),
 	}
 	if qm.Constraints != "" {
-		parts = append(parts, escapeERDDAPConstraints(qm.Constraints))
+		parts = append(parts, normalizeERDDAPConstraints(qm.Constraints))
 	}
 
 	u.RawQuery = strings.Join(parts, "&")
@@ -222,6 +222,18 @@ func escapeERDDAPConstraints(s string) string {
 	}
 
 	return b.String()
+}
+
+// normalizeERDDAPConstraints decodes s with url.PathUnescape when every "%"
+// in it is a valid percent-escape (so ERDDAP's own pre-encoded Data Access
+// Form output round-trips instead of being double-encoded), then escapes
+// the result the same way a hand-typed value would be. An invalid escape
+// falls back to treating s as raw, unescaped input — today's behavior.
+func normalizeERDDAPConstraints(s string) string {
+	if decoded, err := url.PathUnescape(s); err == nil {
+		s = decoded
+	}
+	return escapeERDDAPConstraints(s)
 }
 
 // percentEncodeRune writes r to b as one or more "%XX" escapes over its
