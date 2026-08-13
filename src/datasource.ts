@@ -1,12 +1,32 @@
-import { CoreApp, DataSourceInstanceSettings, ScopedVars } from '@grafana/data';
+import {
+  CoreApp,
+  DataSourceInstanceSettings,
+  LegacyMetricFindQueryOptions,
+  MetricFindValue,
+  ScopedVars,
+} from '@grafana/data';
 import { DataSourceWithBackend, getTemplateSrv } from '@grafana/runtime';
 
 import { formatErddapValue } from './interpolation';
-import { DEFAULT_QUERY, DatasetSearchResponse, ErddapDataSourceOptions, ErddapQuery, VariablesResponse } from './types';
+import {
+  DEFAULT_QUERY,
+  DatasetSearchResponse,
+  ErddapDataSourceOptions,
+  ErddapQuery,
+  ErddapVariableQuery,
+  VariablesResponse,
+} from './types';
+import { ErddapVariableSupport } from './variableSupport';
+
+/** The shape of the `/distinct` CallResource endpoint's response body. */
+interface DistinctResponse {
+  values: string[];
+}
 
 export class DataSource extends DataSourceWithBackend<ErddapQuery, ErddapDataSourceOptions> {
   constructor(instanceSettings: DataSourceInstanceSettings<ErddapDataSourceOptions>) {
     super(instanceSettings);
+    this.variables = new ErddapVariableSupport(this);
   }
 
   getDefaultQuery(_: CoreApp): Partial<ErddapQuery> {
@@ -67,5 +87,65 @@ export class DataSource extends DataSourceWithBackend<ErddapQuery, ErddapDataSou
    */
   async getVariables(datasetId: string): Promise<VariablesResponse> {
     return this.getResource('variables', { datasetId });
+  }
+
+  /**
+   * Resolves a dashboard query variable to the distinct values one dataset
+   * variable takes.
+   *
+   * Accepts either the typed form produced by {@link VariableQueryEditor} or a
+   * `"datasetId.variable"` string, which is what a hand-authored dashboard JSON
+   * is most likely to carry. Every field is interpolated first, so one variable
+   * can be defined in terms of another.
+   *
+   * An incomplete query resolves to no values rather than raising: a
+   * half-typed variable definition should show no options, not an error.
+   *
+   * @param query the variable query, typed or in string form
+   * @param options carries the scoped variables to interpolate with
+   * @returns the distinct values, in the order ERDDAP returned them
+   */
+  async metricFindQuery(
+    query: ErddapVariableQuery | string,
+    options?: LegacyMetricFindQueryOptions
+  ): Promise<MetricFindValue[]> {
+    const templateSrv = getTemplateSrv();
+    const { scopedVars } = options ?? {};
+    // A scalar lookup value, so the constraint formatter does not apply here.
+    const resolve = (field?: string) => templateSrv.replace(field, scopedVars).trim();
+
+    let raw: Pick<ErddapVariableQuery, 'datasetId' | 'variable' | 'constraints'>;
+
+    if (typeof query === 'string') {
+      // Dataset IDs and variable names are both [A-Za-z0-9_]+, but splitting on
+      // the first separator only keeps a stray dot inside the name intact
+      // rather than silently truncating it.
+      const separator = query.indexOf('.');
+      if (separator === -1) {
+        return [];
+      }
+      raw = { datasetId: query.slice(0, separator), variable: query.slice(separator + 1) };
+    } else {
+      raw = query;
+    }
+
+    const datasetId = resolve(raw.datasetId);
+    const variable = resolve(raw.variable);
+    const constraints = resolve(raw.constraints);
+
+    if (!datasetId || !variable) {
+      return [];
+    }
+
+    const response = await this.getResource<DistinctResponse>('distinct', {
+      datasetId,
+      variable,
+      // The backend distinguishes "no constraints" from an empty expression.
+      ...(constraints ? { constraints } : {}),
+    });
+
+    // Already sorted and deduplicated by ERDDAP's distinct(); re-sorting would
+    // only diverge from what the server considers canonical order.
+    return (response?.values ?? []).map((value) => ({ text: value }));
   }
 }

@@ -10,6 +10,19 @@ export interface ErddapQuery extends DataQuery {
 export const DEFAULT_QUERY: Partial<ErddapQuery> = {};
 
 /**
+ * A dashboard *query variable*: the distinct values one dataset variable takes.
+ *
+ * Separate from {@link ErddapQuery} because a variable query returns a list of
+ * values rather than time series, so it names a single variable and has no
+ * concept of the requested field list.
+ */
+export interface ErddapVariableQuery extends DataQuery {
+  datasetId?: string;
+  variable?: string;
+  constraints?: string;
+}
+
+/**
  * These are options configured for each DataSource instance
  */
 export interface ErddapDataSourceOptions extends DataSourceJsonData {

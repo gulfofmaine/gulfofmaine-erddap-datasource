@@ -211,3 +211,122 @@ describe('applyTemplateVariables', () => {
     expect(result.constraints).toBe('A01,B01');
   });
 });
+
+describe('metricFindQuery', () => {
+  let getResource: jest.SpyInstance;
+
+  beforeEach(() => {
+    getResource = jest.spyOn(DataSource.prototype, 'getResource').mockResolvedValue({ values: [] });
+    mockTemplateSrv();
+  });
+
+  afterEach(() => {
+    getResource.mockRestore();
+  });
+
+  it('parses the "datasetId.variable" string form', async () => {
+    const ds = createDataSource();
+
+    await ds.metricFindQuery('M01.station');
+
+    expect(getResource).toHaveBeenCalledWith('distinct', { datasetId: 'M01', variable: 'station' });
+  });
+
+  it('trims whitespace around each half of the string form', async () => {
+    const ds = createDataSource();
+
+    await ds.metricFindQuery('  M01 . station  ');
+
+    expect(getResource).toHaveBeenCalledWith('distinct', { datasetId: 'M01', variable: 'station' });
+  });
+
+  it('splits on the first dot only', async () => {
+    const ds = createDataSource();
+
+    await ds.metricFindQuery('M01.odd.name');
+
+    expect(getResource).toHaveBeenCalledWith('distinct', { datasetId: 'M01', variable: 'odd.name' });
+  });
+
+  it.each`
+    description          | input
+    ${'no separator'}    | ${'M01'}
+    ${'no dataset'}      | ${'.station'}
+    ${'no variable'}     | ${'M01.'}
+    ${'empty string'}    | ${''}
+    ${'only a dot'}      | ${'.'}
+    ${'only whitespace'} | ${'   '}
+  `('returns no values and makes no request for $description', async ({ input }) => {
+    const ds = createDataSource();
+
+    await expect(ds.metricFindQuery(input)).resolves.toEqual([]);
+    expect(getResource).not.toHaveBeenCalled();
+  });
+
+  it('uses the typed form fields directly', async () => {
+    const ds = createDataSource();
+
+    await ds.metricFindQuery({ refId: 'A', datasetId: 'M01', variable: 'station', constraints: 'depth<2' });
+
+    expect(getResource).toHaveBeenCalledWith('distinct', {
+      datasetId: 'M01',
+      variable: 'station',
+      constraints: 'depth<2',
+    });
+  });
+
+  it('omits empty constraints rather than sending a blank parameter', async () => {
+    const ds = createDataSource();
+
+    await ds.metricFindQuery({ refId: 'A', datasetId: 'M01', variable: 'station', constraints: '  ' });
+
+    expect(getResource).toHaveBeenCalledWith('distinct', { datasetId: 'M01', variable: 'station' });
+  });
+
+  it('returns no values and makes no request when the typed form is incomplete', async () => {
+    const ds = createDataSource();
+
+    await expect(ds.metricFindQuery({ refId: 'A', datasetId: 'M01' })).resolves.toEqual([]);
+    expect(getResource).not.toHaveBeenCalled();
+  });
+
+  it('interpolates every field with the options scopedVars so variables can chain', async () => {
+    const replace = mockTemplateSrv();
+    const scopedVars: ScopedVars = { dataset: { text: 'M01', value: 'M01' } };
+    const ds = createDataSource();
+
+    await ds.metricFindQuery(
+      { refId: 'A', datasetId: '$dataset', variable: '$field', constraints: 'time>=$start' },
+      { scopedVars }
+    );
+
+    // The default format: a lookup value is a scalar, not constraint text.
+    expect(replace).toHaveBeenCalledWith('$dataset', scopedVars);
+    expect(replace).toHaveBeenCalledWith('$field', scopedVars);
+    expect(replace).toHaveBeenCalledWith('time>=$start', scopedVars);
+  });
+
+  it('interpolates the string form too', async () => {
+    const vars: ScopedVars = { dataset: { text: 'M01', value: 'M01' } };
+    getTemplateSrvMock.mockReturnValue({ replace: interpolate(vars) } as unknown as ReturnType<typeof getTemplateSrv>);
+    const ds = createDataSource();
+
+    await ds.metricFindQuery('$dataset.station', { scopedVars: vars });
+
+    expect(getResource).toHaveBeenCalledWith('distinct', { datasetId: 'M01', variable: 'station' });
+  });
+
+  it('maps the response values to MetricFindValues, preserving ERDDAP order', async () => {
+    getResource.mockResolvedValue({ values: ['B01', 'A01'] });
+    const ds = createDataSource();
+
+    await expect(ds.metricFindQuery('M01.station')).resolves.toEqual([{ text: 'B01' }, { text: 'A01' }]);
+  });
+
+  it('tolerates a response without a values array', async () => {
+    getResource.mockResolvedValue({});
+    const ds = createDataSource();
+
+    await expect(ds.metricFindQuery('M01.station')).resolves.toEqual([]);
+  });
+});

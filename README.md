@@ -95,6 +95,88 @@ panels, and state timelines display the mapped text and color instead of the raw
 is cached per datasource instance for one hour. If the metadata can't be fetched or parsed, the query
 still succeeds — the field is just left without mappings.
 
+## Dashboard variables
+
+### Which fields interpolate
+
+Dashboard template variables are substituted into two of the three query fields:
+
+| Field       | Interpolated | Example                                          |
+| ----------- | ------------ | ------------------------------------------------ |
+| Constraints | Yes          | `station="$station"&depth<$maxdepth`             |
+| Variables   | Yes          | `$measurements` → `temperature,salinity`         |
+| Dataset ID  | No           | `$dataset` is sent to ERDDAP as the literal text |
+
+Dataset ID is left alone on purpose: a query targets exactly one dataset, and Grafana's panel **repeat**
+option already produces one panel per value without needing interpolation in the field itself.
+
+### Single-value vs. multi-value: use `=~` for multi-select
+
+This is the one thing worth getting right. ERDDAP's tabledap has **no OR operator**, so a
+comma-separated or brace-wrapped list is meaningless in a constraint. ERDDAP's documented substitute is
+a regex match (`=~`) against an alternation, and that is what the plugin produces:
+
+| Variable selection    | Constraint you write  | Sent to ERDDAP          |
+| --------------------- | --------------------- | ----------------------- |
+| Single value `A01`    | `station="$station"`  | `station="A01"`         |
+| Multi-value `A01,B01` | `station=~"$station"` | `station=~"(A01\|B01)"` |
+
+Writing `station="$station"` with a multi-value selection produces `station="(A01|B01)"`, which matches
+nothing — `=` is an exact string comparison. If a variable is set to "Multi-value" or "Include All
+option", write the constraint with `=~`. Using `=~` with a single-valued variable also works, since a
+plain value is a valid regex, so `=~` is the safe default for any variable that might become multi-value
+later.
+
+A single value is deliberately **not** regex-escaped, which keeps numeric comparisons usable:
+`depth<$maxdepth` with a value of `2.5` is sent as `depth<2.5`, not `depth<2\.5`.
+
+### Multi-value in the Variables field
+
+The Variables field is already comma-separated, so a multi-value variable expands there as a plain comma
+list: `$measurements` with `temperature` and `salinity` selected becomes `temperature,salinity`.
+
+### Special characters
+
+Quotes and backslashes inside a variable's value are escaped automatically, so a station named `A"B`
+cannot break out of the quoted value. ERDDAP's structural characters (`&`, `,`, `(`, `)`) are left as-is
+in the substituted text and then handled by the backend's constraint escaper, exactly as they would be
+for a hand-typed value — see
+[Quoted values: special characters are escaped automatically](#quoted-values-special-characters-are-escaped-automatically).
+
+### Format overrides
+
+Grafana's inline format syntax still works and takes precedence over the plugin's formatter, for the
+cases where you want something other than a regex alternation:
+
+```
+${station:csv}     A01,B01
+${station:pipe}    A01|B01
+${station:raw}     the value with no escaping at all
+```
+
+### Query variables
+
+To populate a variable from the ERDDAP server itself, go to **Dashboard settings → Variables → New
+variable**, choose type **Query**, and select this datasource. The editor asks for:
+
+- **Dataset ID** — the tabledap dataset ID, e.g. `M01_sbe37_all`
+- **Variable** — the variable whose values become the options, e.g. `station`
+- **Constraints** — optional, see below
+
+All three fields are interpolated themselves, so one variable can depend on another: a `$station`
+variable can take `$dataset` as its Dataset ID.
+
+Values come from ERDDAP's `distinct()` feature, so they arrive already sorted and deduplicated by the
+server; the plugin does not reorder them.
+
+A hand-authored dashboard JSON can also give the variable's query as the string `"datasetId.variable"`
+(e.g. `"M01_sbe37_all.station"`) instead of the object form. Both resolve identically.
+
+**The dashboard time range is not applied.** A query variable lists every distinct value in the dataset,
+not just those within the current time window — the values would otherwise churn every time the time
+picker moved. Use the Constraints field as the escape hatch if you want a narrower list, e.g.
+`time>=2024-01-01`.
+
 ## Alerting
 
 Queries are executed in the Go backend rather than the browser, and every frame the backend returns is a
@@ -112,6 +194,10 @@ Two things to keep in mind when writing alert queries:
   evaluates a single physical series.
 - **A query that matches no rows evaluates to NoData**, not to an error, so set the rule's "No data"
   handling to match your intent.
+- **Dashboard template variables are not available to alert rules.** Interpolation happens in the
+  browser, but alert rules are evaluated server-side with no dashboard context, so a `$station` in an
+  alert query reaches ERDDAP as the literal string `$station` and the query errors. Hardcode the values
+  in alert rule queries.
 
 ## Development
 
