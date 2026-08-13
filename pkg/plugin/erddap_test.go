@@ -236,6 +236,16 @@ func TestEscapeERDDAPConstraints(t *testing.T) {
 			in:   `name="A\"&B"`,
 			want: `name=%22A%5C%22%26B%22`,
 		},
+		{
+			name: "even backslash run before closing quote toggles state (issue #38 regression)",
+			in:   `station="A\\"&depth<2`,
+			want: `station=%22A%5C%5C%22&depth%3C2`,
+		},
+		{
+			name: "odd backslash run (three) before closing quote stays escaped",
+			in:   `name="A\\\"&B"`,
+			want: `name=%22A%5C%5C%5C%22%26B%22`,
+		},
 	}
 
 	for _, tc := range tests {

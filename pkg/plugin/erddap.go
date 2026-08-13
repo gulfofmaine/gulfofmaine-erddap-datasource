@@ -192,7 +192,11 @@ func escapeERDDAPConstraints(s string) string {
 	inQuotes := false
 	for i, r := range runes {
 		if r == '"' {
-			escaped := inQuotes && i > 0 && runes[i-1] == '\\'
+			backslashes := 0
+			for j := i - 1; j >= 0 && runes[j] == '\\'; j-- {
+				backslashes++
+			}
+			escaped := inQuotes && backslashes%2 == 1
 			if !escaped {
 				inQuotes = !inQuotes
 			}
