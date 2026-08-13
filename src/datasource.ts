@@ -1,6 +1,7 @@
-import { CoreApp, DataSourceInstanceSettings } from '@grafana/data';
-import { DataSourceWithBackend } from '@grafana/runtime';
+import { CoreApp, DataSourceInstanceSettings, ScopedVars } from '@grafana/data';
+import { DataSourceWithBackend, getTemplateSrv } from '@grafana/runtime';
 
+import { formatErddapValue } from './interpolation';
 import { DEFAULT_QUERY, DatasetSearchResponse, ErddapDataSourceOptions, ErddapQuery, VariablesResponse } from './types';
 
 export class DataSource extends DataSourceWithBackend<ErddapQuery, ErddapDataSourceOptions> {
@@ -15,6 +16,32 @@ export class DataSource extends DataSourceWithBackend<ErddapQuery, ErddapDataSou
   filterQuery(query: ErddapQuery): boolean {
     // if the dataset or variables have not been provided, prevent the query from being executed
     return !!query.datasetId?.trim() && !!query.variables?.trim();
+  }
+
+  /**
+   * Interpolates dashboard variables into a query before it is sent to the
+   * backend.
+   *
+   * `datasetId` is deliberately left alone: a query targets exactly one
+   * dataset, and panel repeat already supplies per-panel values through
+   * `scopedVars`.
+   *
+   * @param query the query as configured in the editor
+   * @param scopedVars panel- and row-scoped variable values
+   * @returns the query with `constraints` and `variables` interpolated
+   */
+  applyTemplateVariables(query: ErddapQuery, scopedVars: ScopedVars): ErddapQuery {
+    const templateSrv = getTemplateSrv();
+
+    return {
+      ...query,
+      // Absent stays absent: the backend treats an empty constraint string as
+      // "no constraints", and an empty variable list as an invalid query.
+      constraints: query.constraints
+        ? templateSrv.replace(query.constraints, scopedVars, formatErddapValue)
+        : query.constraints,
+      variables: query.variables ? templateSrv.replace(query.variables, scopedVars, 'csv') : query.variables,
+    };
   }
 
   /**
