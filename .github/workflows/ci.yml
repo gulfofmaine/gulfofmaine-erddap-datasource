@@ -176,6 +176,10 @@ jobs:
   playwright-tests:
     needs: [resolve-versions, build, sign-and-package]
     timeout-minutes: 15
+    # The nightly leg tests against an unreleased Grafana, so it breaks whenever
+    # a UI change lands ahead of a matching @grafana/plugin-e2e release. It still
+    # runs and reports, but it does not gate the workflow. Released versions do.
+    continue-on-error: ${{ matrix.GRAFANA_IMAGE.VERSION == 'nightly' }}
     strategy:
       fail-fast: false
       matrix:
