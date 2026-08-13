@@ -9,7 +9,13 @@ Initial release.
 - Add a query editor with Dataset ID, Variables (comma-separated), and Constraints (raw ERDDAP
   constraint expression) fields.
 - Map the dashboard time range to `time>=`/`time<=` constraints in RFC3339 UTC.
-- Execute queries in the Go backend, so this datasource supports Grafana alerting.
+- Execute queries in the Go backend, and declare `alerting` in `plugin.json`, so this datasource can be
+  used for Grafana alerting.
+- Partition responses by their String columns: `station` and other non-numeric variables become Grafana
+  labels on the numeric fields rather than fields of their own, producing one series per station instead
+  of a single interleaved field with duplicate timestamps. This also keeps every frame a wide time
+  series, which Grafana's alerting expression engine requires. String variables no longer appear as
+  table-panel columns.
 - Treat ERDDAP's "no matching results" response as an empty result rather than an error.
 - Add a "Save & test" health check that verifies the configured URL responds like an ERDDAP server.
 - Add Grafana value mappings for variables with CF `flag_values`/`flag_meanings` attributes (e.g.

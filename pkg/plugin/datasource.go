@@ -10,7 +10,6 @@ import (
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
 	"github.com/grafana/grafana-plugin-sdk-go/backend/httpclient"
 	"github.com/grafana/grafana-plugin-sdk-go/backend/instancemgmt"
-	"github.com/grafana/grafana-plugin-sdk-go/data"
 	"github.com/grafana/grafana-plugin-sdk-go/experimental/concurrent"
 	"github.com/gulfofmaine/erddap/pkg/models"
 )
@@ -92,12 +91,12 @@ func (d *Datasource) handleQuery(ctx context.Context, q concurrent.Query) backen
 
 	mappings := d.flagMappingsFor(ctx, qm.DatasetID)
 
-	frame, err := d.fetch(ctx, tabledapURL, *qm, mappings)
+	frames, err := d.fetch(ctx, tabledapURL, *qm, mappings)
 	if err != nil {
 		return backend.ErrorResponseWithErrorSource(err)
 	}
 
-	return backend.DataResponse{Frames: data.Frames{frame}}
+	return backend.DataResponse{Frames: frames}
 }
 
 // CheckHealth handles health checks sent from Grafana to the plugin. The

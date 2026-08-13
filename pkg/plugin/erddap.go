@@ -238,10 +238,22 @@ func isUnreservedRune(r rune) bool {
 }
 
 // parseTableJSON decodes an ERDDAP tabledap .json response body (the
-// "columnNames/columnTypes/columnUnits/rows" shape) into a data.Frame. Rows
+// "columnNames/columnTypes/columnUnits/rows" shape) into data.Frames. Rows
 // are sorted ascending by their time column before fields are built, since
 // multi-station queries can return interleaved timestamps.
-func parseTableJSON(r io.Reader, frameName string, mappings map[string]data.ValueMappings) (*data.Frame, error) {
+//
+// Non-numeric (String) columns are not emitted as fields. Instead, rows are
+// partitioned into one frame per distinct combination of String-column
+// values, and those values become data.Labels on the numeric fields. That
+// keeps every frame a *wide* time series (a time field plus numeric fields
+// only), which is what Grafana's alerting expression engine requires — a
+// frame carrying a String field alongside time is classified as "long" and
+// rejected with "input data must be a wide series". It also splits an
+// interleaved multi-station response into one series per station instead of
+// collapsing them into a single field with duplicate timestamps.
+//
+// A response with no String columns yields exactly one frame with no labels.
+func parseTableJSON(r io.Reader, frameName string, mappings map[string]data.ValueMappings) (data.Frames, error) {
 	var resp erddapTableResponse
 	if err := json.NewDecoder(r).Decode(&resp); err != nil {
 		return nil, err
@@ -281,56 +293,126 @@ func parseTableJSON(r io.Reader, frameName string, mappings map[string]data.Valu
 
 	sortRowsByTime(rows)
 
-	frame := data.NewFrame(frameName)
-	for i, name := range table.ColumnNames {
-		var colType, unit string
+	// Numeric columns become value fields; every other column is a "factor"
+	// whose values are lifted into labels (see the doc comment above).
+	var valueIndices, factorIndices []int
+	for i := range table.ColumnNames {
+		if i == timeIdx {
+			continue
+		}
+		var colType string
 		if i < len(table.ColumnTypes) {
 			colType = table.ColumnTypes[i]
 		}
-		if i < len(table.ColumnUnits) {
-			unit = table.ColumnUnits[i]
+		if numericColumnTypes[colType] {
+			valueIndices = append(valueIndices, i)
+		} else {
+			factorIndices = append(factorIndices, i)
 		}
-
-		var field *data.Field
-		switch {
-		case i == timeIdx:
-			times := make([]time.Time, len(rows))
-			for j, row := range rows {
-				times[j] = row.time
-			}
-			field = data.NewField(name, nil, times)
-		case numericColumnTypes[colType]:
-			values := make([]*float64, len(rows))
-			for j, row := range rows {
-				values[j] = parseFloatCell(cellAt(row.cells, i))
-			}
-			field = data.NewField(name, nil, values)
-		default:
-			values := make([]*string, len(rows))
-			for j, row := range rows {
-				values[j] = parseStringCell(cellAt(row.cells, i))
-			}
-			field = data.NewField(name, nil, values)
-		}
-
-		if unit != "" && unit != "UTC" {
-			// Grafana reads FieldConfig.Unit as a unit ID, so a raw ERDDAP unit
-			// string like "m" would be formatted as minutes. The "suffix:" custom
-			// unit renders the text verbatim after the value instead.
-			field.Config = &data.FieldConfig{Unit: "suffix:" + unit}
-		}
-
-		if vm, ok := mappings[name]; ok {
-			if field.Config == nil {
-				field.Config = &data.FieldConfig{}
-			}
-			field.Config.Mappings = vm
-		}
-
-		frame.Fields = append(frame.Fields, field)
 	}
 
-	return frame, nil
+	frames := make(data.Frames, 0, 1)
+	for _, group := range groupRowsByFactors(rows, factorIndices, table.ColumnNames) {
+		frame := data.NewFrame(frameName)
+
+		times := make([]time.Time, len(group.rows))
+		for j, row := range group.rows {
+			times[j] = row.time
+		}
+		frame.Fields = append(frame.Fields, data.NewField(table.ColumnNames[timeIdx], nil, times))
+
+		for _, i := range valueIndices {
+			values := make([]*float64, len(group.rows))
+			for j, row := range group.rows {
+				values[j] = parseFloatCell(cellAt(row.cells, i))
+			}
+
+			name := table.ColumnNames[i]
+			field := data.NewField(name, group.labels, values)
+
+			var unit string
+			if i < len(table.ColumnUnits) {
+				unit = table.ColumnUnits[i]
+			}
+			if unit != "" && unit != "UTC" {
+				// Grafana reads FieldConfig.Unit as a unit ID, so a raw ERDDAP unit
+				// string like "m" would be formatted as minutes. The "suffix:" custom
+				// unit renders the text verbatim after the value instead.
+				field.Config = &data.FieldConfig{Unit: "suffix:" + unit}
+			}
+
+			if vm, ok := mappings[name]; ok {
+				if field.Config == nil {
+					field.Config = &data.FieldConfig{}
+				}
+				field.Config.Mappings = vm
+			}
+
+			frame.Fields = append(frame.Fields, field)
+		}
+
+		frames = append(frames, frame)
+	}
+
+	return frames, nil
+}
+
+// rowGroup is a set of rows sharing the same values across every factor
+// (non-numeric) column, along with the labels those values produce.
+type rowGroup struct {
+	labels data.Labels
+	rows   []erddapRow
+}
+
+// groupRowsByFactors partitions rows by their combined factor-column values,
+// preserving first-appearance order so frame ordering is deterministic (rows
+// arrive already sorted by time, so this is the order of each group's
+// earliest row). A null or non-string factor cell contributes an empty label
+// value rather than dropping the row.
+//
+// With no factor columns it returns a single unlabeled group holding every
+// row, which is the common numeric-only query. A zero-row response likewise
+// yields one unlabeled (and therefore zero-row) group rather than no groups
+// at all, so callers always get a typed frame to render "No data" from.
+func groupRowsByFactors(rows []erddapRow, factorIndices []int, columnNames []string) []rowGroup {
+	if len(factorIndices) == 0 || len(rows) == 0 {
+		return []rowGroup{{labels: nil, rows: rows}}
+	}
+
+	var groups []rowGroup
+	byKey := map[string]int{}
+
+	for _, row := range rows {
+		values := make([]string, len(factorIndices))
+		for k, i := range factorIndices {
+			if s := parseStringCell(cellAt(row.cells, i)); s != nil {
+				values[k] = *s
+			}
+		}
+
+		// Rows are keyed on the encoded value tuple rather than the label map
+		// (which isn't comparable). The encoding is unambiguous because column
+		// count is fixed, so no separator can be confused with a value.
+		key, err := json.Marshal(values)
+		if err != nil {
+			continue
+		}
+
+		idx, ok := byKey[string(key)]
+		if !ok {
+			labels := make(data.Labels, len(factorIndices))
+			for k, i := range factorIndices {
+				labels[columnNames[i]] = values[k]
+			}
+			groups = append(groups, rowGroup{labels: labels})
+			idx = len(groups) - 1
+			byKey[string(key)] = idx
+		}
+
+		groups[idx].rows = append(groups[idx].rows, row)
+	}
+
+	return groups
 }
 
 // sortRowsByTime sorts rows ascending by time in place. Kept as a small,
@@ -389,8 +471,26 @@ func parseStringCell(raw json.RawMessage) *string {
 	return &s
 }
 
+// setTimeSeriesMeta stamps every frame with the multi-frame time series data
+// plane type and the tabledap URL that produced it, so the query inspector
+// (and alert-rule debugging) shows the real request.
+//
+// Note that Meta.Type is descriptive only: what Grafana's alerting
+// expression engine actually enforces is that each frame's
+// TimeSeriesSchema() is wide, which parseTableJSON guarantees by construction.
+func setTimeSeriesMeta(frames data.Frames, url string) data.Frames {
+	for _, frame := range frames {
+		frame.Meta = &data.FrameMeta{
+			Type:                data.FrameTypeTimeSeriesMulti,
+			TypeVersion:         data.FrameTypeVersion{0, 1},
+			ExecutedQueryString: url,
+		}
+	}
+	return frames
+}
+
 // fetch issues the ERDDAP tabledap request at url and decodes the result
-// into a data.Frame named after qm.DatasetID.
+// into data.Frames named after qm.DatasetID.
 //
 //   - A transport-level failure (DNS, connection refused, timeout, ...) is
 //     wrapped as a backend.DownstreamError.
@@ -409,7 +509,7 @@ func parseStringCell(raw json.RawMessage) *string {
 //     the error is never blank) and is wrapped with
 //     backend.NewErrorWithSource, deriving the ErrorSource from the HTTP
 //     status code.
-func (d *Datasource) fetch(ctx context.Context, url string, qm models.QueryModel, mappings map[string]data.ValueMappings) (*data.Frame, error) {
+func (d *Datasource) fetch(ctx context.Context, url string, qm models.QueryModel, mappings map[string]data.ValueMappings) (data.Frames, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, backend.DownstreamError(err)
@@ -424,11 +524,11 @@ func (d *Datasource) fetch(ctx context.Context, url string, qm models.QueryModel
 	}()
 
 	if resp.StatusCode == http.StatusOK {
-		frame, err := parseTableJSON(resp.Body, qm.DatasetID, mappings)
+		frames, err := parseTableJSON(resp.Body, qm.DatasetID, mappings)
 		if err != nil {
 			return nil, backend.DownstreamError(fmt.Errorf("erddap: parsing response: %w", err))
 		}
-		return frame, nil
+		return setTimeSeriesMeta(frames, url), nil
 	}
 
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxDiagnosticBodyBytes))
@@ -438,7 +538,7 @@ func (d *Datasource) fetch(ctx context.Context, url string, qm models.QueryModel
 	}
 
 	if resp.StatusCode == http.StatusNotFound && strings.Contains(message, erddapNoDataMessage) {
-		return emptyTypedFrame(qm, mappings), nil
+		return setTimeSeriesMeta(emptyTypedFrame(qm, mappings), url), nil
 	}
 
 	return nil, backend.NewErrorWithSource(errors.New(message), backend.ErrorSourceFromHTTPStatus(resp.StatusCode))
@@ -463,7 +563,13 @@ func extractERDDAPMessage(body []byte) string {
 // valid but matches no rows: a time field plus one []*float64 field per
 // user-requested variable (the auto-prepended "time" entry from
 // cleanVariables is not counted twice).
-func emptyTypedFrame(qm models.QueryModel, mappings map[string]data.ValueMappings) *data.Frame {
+//
+// Every variable is typed as numeric because the no-data path never sees a
+// columnTypes list to tell String columns apart. The frame is wide either
+// way, so an alert rule over it evaluates to NoData rather than erroring;
+// the only visible effect is that a String variable's field type differs
+// between the empty and non-empty responses.
+func emptyTypedFrame(qm models.QueryModel, mappings map[string]data.ValueMappings) data.Frames {
 	variables := cleanVariables(qm.Variables)
 
 	frame := data.NewFrame(qm.DatasetID)
@@ -476,5 +582,5 @@ func emptyTypedFrame(qm models.QueryModel, mappings map[string]data.ValueMapping
 		frame.Fields = append(frame.Fields, field)
 	}
 
-	return frame
+	return data.Frames{frame}
 }
