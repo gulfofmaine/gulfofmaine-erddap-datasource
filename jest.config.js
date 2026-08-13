@@ -5,4 +5,9 @@ process.env.TZ = 'UTC';
 module.exports = {
   // Jest configuration provided by Grafana scaffolding
   ...require('./.config/jest.config'),
+  coverageDirectory: 'coverage',
+  coverageReporters: ['lcov', 'text'],
+  reporters: process.env.CI
+    ? ['default', ['jest-junit', { outputDirectory: 'coverage', outputName: 'frontend-junit.xml' }]]
+    : ['default'],
 };
