@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -170,6 +171,117 @@ func TestResourceVariables(t *testing.T) {
 	})
 }
 
+func TestResourceDatasets(t *testing.T) {
+	// searchTestServer answers /search/advanced.json with a fixed result and
+	// records the query string it was called with, so the tests can prove the
+	// resource call's parameters survive httpadapter end to end.
+	searchTestServer := func(t *testing.T, gotQuery *url.Values) *httptest.Server {
+		t.Helper()
+
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			*gotQuery = r.URL.Query()
+			_, _ = w.Write([]byte(searchBody(
+				`["Title", "Summary", "Institution", "tabledap", "Dataset ID"]`,
+				`["Buoy A", "A summary", "NERACOOS", "https://e.org/tabledap/A", "A01"],`+
+					`["Grid Only", "", "NOAA", "", "G01"]`,
+			)))
+		}))
+		t.Cleanup(srv.Close)
+
+		return srv
+	}
+
+	type datasetsResponse struct {
+		Datasets []struct {
+			ID                string `json:"id"`
+			Title             string `json:"title"`
+			Institution       string `json:"institution"`
+			Summary           string `json:"summary"`
+			TabledapSupported bool   `json:"tabledapSupported"`
+		} `json:"datasets"`
+		Truncated bool `json:"truncated"`
+	}
+
+	t.Run("forwards the search text and returns results", func(t *testing.T) {
+		var gotQuery url.Values
+		srv := searchTestServer(t, &gotQuery)
+		d := newTestDatasource(srv.URL, srv.Client())
+
+		resp := callResource(t, d, http.MethodGet, "/datasets?q=buoy+temperature")
+		if resp.Status != http.StatusOK {
+			t.Fatalf("status = %d (%s), want 200", resp.Status, resp.Body)
+		}
+
+		if got := gotQuery.Get("searchFor"); got != "buoy temperature" {
+			t.Errorf("upstream searchFor = %q, want %q", got, "buoy temperature")
+		}
+		if gotQuery.Get("page") != "1" || gotQuery.Get("itemsPerPage") == "" {
+			t.Errorf("upstream query missing page/itemsPerPage: %v", gotQuery)
+		}
+
+		var body datasetsResponse
+		decodeResourceBody(t, resp, &body)
+
+		if len(body.Datasets) != 2 {
+			t.Fatalf("expected 2 datasets, got %+v", body.Datasets)
+		}
+		if body.Datasets[0].ID != "A01" || !body.Datasets[0].TabledapSupported {
+			t.Errorf("Datasets[0] = %+v, want tabledap-capable A01", body.Datasets[0])
+		}
+		if body.Datasets[1].ID != "G01" || body.Datasets[1].TabledapSupported {
+			t.Errorf("Datasets[1] = %+v, want griddap-only G01", body.Datasets[1])
+		}
+		if body.Truncated {
+			t.Error("expected truncated = false for a short result set")
+		}
+	})
+
+	t.Run("limit is clamped", func(t *testing.T) {
+		var gotQuery url.Values
+		srv := searchTestServer(t, &gotQuery)
+		d := newTestDatasource(srv.URL, srv.Client())
+
+		resp := callResource(t, d, http.MethodGet, "/datasets?limit=99999")
+		if resp.Status != http.StatusOK {
+			t.Fatalf("status = %d (%s), want 200", resp.Status, resp.Body)
+		}
+		if got := gotQuery.Get("itemsPerPage"); got != strconv.Itoa(maxSearchLimit) {
+			t.Errorf("itemsPerPage = %q, want %d", got, maxSearchLimit)
+		}
+	})
+
+	t.Run("truncated is set when the page is full", func(t *testing.T) {
+		var gotQuery url.Values
+		srv := searchTestServer(t, &gotQuery)
+		d := newTestDatasource(srv.URL, srv.Client())
+
+		resp := callResource(t, d, http.MethodGet, "/datasets?limit=2")
+		if resp.Status != http.StatusOK {
+			t.Fatalf("status = %d (%s), want 200", resp.Status, resp.Body)
+		}
+
+		var body datasetsResponse
+		decodeResourceBody(t, resp, &body)
+		if !body.Truncated {
+			t.Error("expected truncated = true when the result count equals the limit")
+		}
+	})
+
+	t.Run("upstream failure is a 502", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusInternalServerError)
+		}))
+		defer srv.Close()
+
+		d := newTestDatasource(srv.URL, srv.Client())
+
+		resp := callResource(t, d, http.MethodGet, "/datasets")
+		if resp.Status != http.StatusBadGateway {
+			t.Fatalf("status = %d, want 502", resp.Status)
+		}
+	})
+}
+
 func TestResourceRouting(t *testing.T) {
 	t.Run("wrong method is a 405", func(t *testing.T) {
 		srv := infoTestServer(t, "foo")
@@ -192,7 +304,7 @@ func TestResourceRouting(t *testing.T) {
 	})
 
 	t.Run("missing base URL is a 400 on every route", func(t *testing.T) {
-		for _, target := range []string{"/variables?datasetId=foo"} {
+		for _, target := range []string{"/variables?datasetId=foo", "/datasets"} {
 			t.Run(target, func(t *testing.T) {
 				d := newTestDatasource("", http.DefaultClient)
 

@@ -20,6 +20,7 @@ import (
 //	GET /variables?datasetId= list one dataset's variables
 func (d *Datasource) newResourceHandler() backend.CallResourceHandler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /datasets", d.handleDatasets)
 	mux.HandleFunc("GET /variables", d.handleVariables)
 
 	return httpadapter.New(mux)
@@ -29,6 +30,46 @@ func (d *Datasource) newResourceHandler() backend.CallResourceHandler {
 // editor's dataset and variable pickers).
 func (d *Datasource) CallResource(ctx context.Context, req *backend.CallResourceRequest, sender backend.CallResourceResponseSender) error {
 	return d.resourceHandler.CallResource(ctx, req, sender)
+}
+
+// resourceDataset is the frontend-facing JSON shape of an erddapDataset.
+type resourceDataset struct {
+	ID                string `json:"id"`
+	Title             string `json:"title"`
+	Institution       string `json:"institution"`
+	Summary           string `json:"summary"`
+	TabledapSupported bool   `json:"tabledapSupported"`
+}
+
+// handleDatasets serves GET /datasets?q=<text>&limit=<n>, searching the
+// ERDDAP server's catalog so the query editor can offer a dataset picker.
+//
+// An omitted q browses everything (bounded by limit). The response's
+// "truncated" flag reports that the result set filled the requested page, so
+// the picker can prompt the user to narrow their search rather than implying
+// they have seen every match.
+func (d *Datasource) handleDatasets(w http.ResponseWriter, r *http.Request) {
+	if !d.requireBaseURL(w) {
+		return
+	}
+
+	limit := searchLimitFrom(r.URL.Query().Get("limit"))
+
+	results, err := d.searchDatasets(r.Context(), r.URL.Query().Get("q"), limit)
+	if err != nil {
+		writeUpstreamError(w, err)
+		return
+	}
+
+	datasets := make([]resourceDataset, 0, len(results))
+	for _, ds := range results {
+		datasets = append(datasets, resourceDataset(ds))
+	}
+
+	writeResourceJSON(w, http.StatusOK, map[string]any{
+		"datasets":  datasets,
+		"truncated": len(results) == limit,
+	})
 }
 
 // resourceVariable is the frontend-facing JSON shape of an erddapVariable.
