@@ -35,9 +35,9 @@ const erddapVersionPrefix = "ERDDAP_version="
 // Datasource queries an ERDDAP server's tabledap endpoints via the Grafana
 // plugin SDK.
 type Datasource struct {
-	settings     *models.PluginSettings
-	httpClient   *http.Client
-	flagMappings *flagMappingsCache
+	settings   *models.PluginSettings
+	httpClient *http.Client
+	info       *infoCache
 }
 
 // NewDatasource creates a new datasource instance.
@@ -54,9 +54,9 @@ func NewDatasource(ctx context.Context, settings backend.DataSourceInstanceSetti
 	}
 
 	return &Datasource{
-		settings:     pluginSettings,
-		httpClient:   httpClient,
-		flagMappings: newFlagMappingsCache(),
+		settings:   pluginSettings,
+		httpClient: httpClient,
+		info:       newInfoCache(),
 	}, nil
 }
 
