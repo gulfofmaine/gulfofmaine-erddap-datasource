@@ -18,10 +18,13 @@ import (
 //
 //	GET /datasets?q=&limit=   search the server's datasets
 //	GET /variables?datasetId= list one dataset's variables
+//	GET /distinct?datasetId=&variable=&constraints=
+//	                          list one variable's distinct values
 func (d *Datasource) newResourceHandler() backend.CallResourceHandler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /datasets", d.handleDatasets)
 	mux.HandleFunc("GET /variables", d.handleVariables)
+	mux.HandleFunc("GET /distinct", d.handleDistinct)
 
 	return httpadapter.New(mux)
 }
@@ -112,6 +115,44 @@ func (d *Datasource) handleVariables(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeResourceJSON(w, http.StatusOK, map[string]any{"variables": variables})
+}
+
+// handleDistinct serves
+// GET /distinct?datasetId=<id>&variable=<name>&constraints=<expr>, listing
+// the distinct values one variable takes in a dataset. It backs dashboard
+// query variables (metricFindQuery), where a variable's option list is
+// exactly "every station" or "every depth" a dataset carries.
+//
+// constraints is optional and is the only way to narrow the result: the
+// dashboard time range is deliberately not applied, so a variable's options
+// don't churn as the user moves the time picker. A caller that does want that
+// scoping passes it explicitly (e.g. constraints=time>=2024-01-01).
+func (d *Datasource) handleDistinct(w http.ResponseWriter, r *http.Request) {
+	if !d.requireBaseURL(w) {
+		return
+	}
+
+	query := r.URL.Query()
+
+	datasetID := query.Get("datasetId")
+	if datasetID == "" {
+		writeResourceError(w, http.StatusBadRequest, "datasetId is required")
+		return
+	}
+
+	variable := query.Get("variable")
+	if variable == "" {
+		writeResourceError(w, http.StatusBadRequest, "variable is required")
+		return
+	}
+
+	values, err := d.distinctValues(r.Context(), datasetID, variable, query.Get("constraints"))
+	if err != nil {
+		writeUpstreamError(w, err)
+		return
+	}
+
+	writeResourceJSON(w, http.StatusOK, map[string]any{"values": values})
 }
 
 // requireBaseURL writes the standard 400 and reports false when the

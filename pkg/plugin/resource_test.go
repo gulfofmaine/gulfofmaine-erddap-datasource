@@ -282,6 +282,137 @@ func TestResourceDatasets(t *testing.T) {
 	})
 }
 
+func TestResourceDistinct(t *testing.T) {
+	// distinctTestServer answers any tabledap request with a fixed
+	// single-column distinct() result and records the query string it was
+	// called with, so the tests can prove the resource call's parameters
+	// survive httpadapter end to end.
+	distinctTestServer := func(t *testing.T, gotQuery *string) *httptest.Server {
+		t.Helper()
+
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			*gotQuery = r.URL.RawQuery
+			_, _ = w.Write([]byte(distinctBody("station", "String", `["A01"],["B01"]`)))
+		}))
+		t.Cleanup(srv.Close)
+
+		return srv
+	}
+
+	type distinctResponse struct {
+		Values []string `json:"values"`
+	}
+
+	t.Run("lists a variable's distinct values", func(t *testing.T) {
+		var gotQuery string
+		srv := distinctTestServer(t, &gotQuery)
+		d := newTestDatasource(srv.URL, srv.Client())
+
+		resp := callResource(t, d, http.MethodGet, "/distinct?datasetId=A01&variable=station")
+		if resp.Status != http.StatusOK {
+			t.Fatalf("status = %d (%s), want 200", resp.Status, resp.Body)
+		}
+
+		var body distinctResponse
+		decodeResourceBody(t, resp, &body)
+
+		if len(body.Values) != 2 || body.Values[0] != "A01" || body.Values[1] != "B01" {
+			t.Errorf("values = %+v, want [A01 B01]", body.Values)
+		}
+		if !strings.Contains(gotQuery, "station") || !strings.Contains(gotQuery, "distinct()") {
+			t.Errorf("upstream query = %q, want the variable and distinct()", gotQuery)
+		}
+	})
+
+	t.Run("forwards the constraints parameter", func(t *testing.T) {
+		var gotQuery string
+		srv := distinctTestServer(t, &gotQuery)
+		d := newTestDatasource(srv.URL, srv.Client())
+
+		resp := callResource(t, d, http.MethodGet,
+			"/distinct?datasetId=A01&variable=station&constraints="+url.QueryEscape("time>=2024-01-01"))
+		if resp.Status != http.StatusOK {
+			t.Fatalf("status = %d (%s), want 200", resp.Status, resp.Body)
+		}
+
+		if !strings.Contains(gotQuery, "time%3E=2024-01-01") {
+			t.Errorf("upstream query = %q, want the escaped constraint", gotQuery)
+		}
+	})
+
+	t.Run("missing datasetId is a 400", func(t *testing.T) {
+		var gotQuery string
+		srv := distinctTestServer(t, &gotQuery)
+		d := newTestDatasource(srv.URL, srv.Client())
+
+		resp := callResource(t, d, http.MethodGet, "/distinct?variable=station")
+		if resp.Status != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400", resp.Status)
+		}
+
+		var body map[string]string
+		decodeResourceBody(t, resp, &body)
+		if body["error"] != "datasetId is required" {
+			t.Errorf("error = %q, want %q", body["error"], "datasetId is required")
+		}
+	})
+
+	t.Run("missing variable is a 400", func(t *testing.T) {
+		var gotQuery string
+		srv := distinctTestServer(t, &gotQuery)
+		d := newTestDatasource(srv.URL, srv.Client())
+
+		resp := callResource(t, d, http.MethodGet, "/distinct?datasetId=A01")
+		if resp.Status != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400", resp.Status)
+		}
+
+		var body map[string]string
+		decodeResourceBody(t, resp, &body)
+		if body["error"] != "variable is required" {
+			t.Errorf("error = %q, want %q", body["error"], "variable is required")
+		}
+	})
+
+	t.Run("unknown dataset propagates the upstream 404", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`Error {
+    code=404;
+    message="Not Found: Currently unknown datasetID=nope";
+}`))
+		}))
+		defer srv.Close()
+
+		d := newTestDatasource(srv.URL, srv.Client())
+
+		resp := callResource(t, d, http.MethodGet, "/distinct?datasetId=nope&variable=station")
+		if resp.Status != http.StatusNotFound {
+			t.Fatalf("status = %d, want 404", resp.Status)
+		}
+
+		var body map[string]string
+		decodeResourceBody(t, resp, &body)
+		if !strings.Contains(body["error"], "unknown datasetID=nope") {
+			t.Errorf("error = %q, want the upstream ERDDAP message", body["error"])
+		}
+	})
+
+	t.Run("upstream failure is a 502", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusInternalServerError)
+		}))
+		defer srv.Close()
+
+		d := newTestDatasource(srv.URL, srv.Client())
+
+		resp := callResource(t, d, http.MethodGet, "/distinct?datasetId=A01&variable=station")
+		if resp.Status != http.StatusBadGateway {
+			t.Fatalf("status = %d, want 502", resp.Status)
+		}
+	})
+}
+
 func TestResourceRouting(t *testing.T) {
 	t.Run("wrong method is a 405", func(t *testing.T) {
 		srv := infoTestServer(t, "foo")
@@ -304,7 +435,11 @@ func TestResourceRouting(t *testing.T) {
 	})
 
 	t.Run("missing base URL is a 400 on every route", func(t *testing.T) {
-		for _, target := range []string{"/variables?datasetId=foo", "/datasets"} {
+		for _, target := range []string{
+			"/variables?datasetId=foo",
+			"/datasets",
+			"/distinct?datasetId=foo&variable=station",
+		} {
 			t.Run(target, func(t *testing.T) {
 				d := newTestDatasource("", http.DefaultClient)
 
