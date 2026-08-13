@@ -10,6 +10,53 @@ import (
 	"github.com/gulfofmaine/erddap/pkg/models"
 )
 
+// assertWideFrames is the alerting regression guard: Grafana's expression
+// engine rejects any frame whose TimeSeriesSchema() is not wide, erroring
+// with "input data must be a wide series but got type <type>". Every frame
+// this plugin returns must therefore hold a time field plus numeric fields
+// only — no String fields, which would classify the frame as "long".
+func assertWideFrames(t *testing.T, frames data.Frames) {
+	t.Helper()
+
+	if len(frames) == 0 {
+		t.Fatal("expected at least one frame, got none")
+	}
+
+	for i, frame := range frames {
+		if got := frame.TimeSeriesSchema().Type; got != data.TimeSeriesTypeWide {
+			t.Errorf("frame %d: TimeSeriesSchema().Type = %s, want %s (alerting requires wide frames)",
+				i, got, data.TimeSeriesTypeWide)
+		}
+	}
+}
+
+// onlyFrame asserts frames holds exactly one wide frame and returns it.
+func onlyFrame(t *testing.T, frames data.Frames) *data.Frame {
+	t.Helper()
+
+	assertWideFrames(t, frames)
+	if len(frames) != 1 {
+		t.Fatalf("expected 1 frame, got %d", len(frames))
+	}
+
+	return frames[0]
+}
+
+// frameByLabels finds the frame whose value fields carry exactly want.
+func frameByLabels(t *testing.T, frames data.Frames, want data.Labels) *data.Frame {
+	t.Helper()
+
+	for _, frame := range frames {
+		// Field 0 is always time, which carries no labels.
+		if len(frame.Fields) > 1 && frame.Fields[1].Labels.String() == want.String() {
+			return frame
+		}
+	}
+
+	t.Fatalf("no frame with labels %v", want)
+	return nil
+}
+
 func TestBuildTabledapURL(t *testing.T) {
 	tr := backend.TimeRange{
 		From: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
@@ -215,11 +262,14 @@ func TestParseTableJSON(t *testing.T) {
 		}
 	}`
 
-	frame, err := parseTableJSON(strings.NewReader(body), "response", nil)
+	frames, err := parseTableJSON(strings.NewReader(body), "response", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
+	// No String columns beyond "time", so partitioning collapses to one
+	// unlabeled frame.
+	frame := onlyFrame(t, frames)
 	if len(frame.Fields) != 3 {
 		t.Fatalf("expected 3 fields, got %d", len(frame.Fields))
 	}
@@ -288,6 +338,151 @@ func TestParseTableJSON(t *testing.T) {
 	}
 }
 
+func TestParseTableJSONPartitionsByStringColumns(t *testing.T) {
+	// Two stations with interleaved timestamps — the shape a multi-station
+	// tabledap query returns. Before partitioning this collapsed into one
+	// frame with duplicate timestamps and a String field, which alerting
+	// rejects as a long frame.
+	body := `{
+		"table": {
+			"columnNames": ["time", "station", "temperature"],
+			"columnTypes": ["String", "String", "double"],
+			"columnUnits": ["UTC", "", "degree_C"],
+			"rows": [
+				["2024-01-01T01:00:00Z", "B01", 12.5],
+				["2024-01-01T00:00:00Z", "A01", 8.2],
+				["2024-01-01T00:00:00Z", "B01", 12.1],
+				["2024-01-01T01:00:00Z", "A01", 8.5]
+			]
+		}
+	}`
+
+	frames, err := parseTableJSON(strings.NewReader(body), "response", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	assertWideFrames(t, frames)
+	if len(frames) != 2 {
+		t.Fatalf("expected 2 frames (one per station), got %d", len(frames))
+	}
+
+	// Groups appear in first-appearance order of the time-sorted rows, so
+	// A01 (whose earliest row ties at 00:00 but sorts stably ahead) comes
+	// first. Assert by label rather than position for readability.
+	for _, tc := range []struct {
+		station string
+		want    []float64
+	}{
+		{station: "A01", want: []float64{8.2, 8.5}},
+		{station: "B01", want: []float64{12.1, 12.5}},
+	} {
+		frame := frameByLabels(t, frames, data.Labels{"station": tc.station})
+
+		if len(frame.Fields) != 2 {
+			t.Fatalf("%s: expected 2 fields (time + temperature), got %d", tc.station, len(frame.Fields))
+		}
+		if name := frame.Fields[1].Name; name != "temperature" {
+			t.Errorf("%s: expected value field 'temperature', got %q", tc.station, name)
+		}
+		// The unit config survives partitioning.
+		if cfg := frame.Fields[1].Config; cfg == nil || cfg.Unit != "suffix:degree_C" {
+			t.Errorf("%s: expected Config.Unit = suffix:degree_C, got %+v", tc.station, cfg)
+		}
+
+		if got := frame.Fields[1].Len(); got != len(tc.want) {
+			t.Fatalf("%s: expected %d rows, got %d", tc.station, len(tc.want), got)
+		}
+		for i, want := range tc.want {
+			got, ok := frame.Fields[1].At(i).(*float64)
+			if !ok || got == nil {
+				t.Fatalf("%s: row %d is nil or wrong type (got %T)", tc.station, i, frame.Fields[1].At(i))
+			}
+			if *got != want {
+				t.Errorf("%s: row %d = %v, want %v", tc.station, i, *got, want)
+			}
+		}
+	}
+}
+
+func TestParseTableJSONNoStringColumnsIsUnlabeled(t *testing.T) {
+	body := `{
+		"table": {
+			"columnNames": ["time", "temperature"],
+			"columnTypes": ["String", "double"],
+			"columnUnits": ["UTC", "degree_C"],
+			"rows": [["2024-01-01T00:00:00Z", 8.2]]
+		}
+	}`
+
+	frames, err := parseTableJSON(strings.NewReader(body), "response", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	frame := onlyFrame(t, frames)
+	if labels := frame.Fields[1].Labels; len(labels) != 0 {
+		t.Errorf("expected no labels without String columns, got %v", labels)
+	}
+}
+
+func TestParseTableJSONNullFactorCell(t *testing.T) {
+	// A null station cell must not drop the row; it groups under an empty
+	// label value instead.
+	body := `{
+		"table": {
+			"columnNames": ["time", "station", "temperature"],
+			"columnTypes": ["String", "String", "double"],
+			"columnUnits": ["UTC", "", "degree_C"],
+			"rows": [
+				["2024-01-01T00:00:00Z", null, 8.2],
+				["2024-01-01T01:00:00Z", "A01", 8.5]
+			]
+		}
+	}`
+
+	frames, err := parseTableJSON(strings.NewReader(body), "response", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	assertWideFrames(t, frames)
+	if len(frames) != 2 {
+		t.Fatalf("expected 2 frames, got %d", len(frames))
+	}
+
+	frame := frameByLabels(t, frames, data.Labels{"station": ""})
+	if got := frame.Fields[1].Len(); got != 1 {
+		t.Errorf("expected the null-station row to be kept, got %d rows", got)
+	}
+}
+
+func TestParseTableJSONZeroRowsWithStringColumn(t *testing.T) {
+	// An HTTP 200 with an empty row list must still yield one typed frame,
+	// otherwise an alert rule gets no frames at all instead of NoData.
+	body := `{
+		"table": {
+			"columnNames": ["time", "station", "temperature"],
+			"columnTypes": ["String", "String", "double"],
+			"columnUnits": ["UTC", "", "degree_C"],
+			"rows": []
+		}
+	}`
+
+	frames, err := parseTableJSON(strings.NewReader(body), "response", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	frame := onlyFrame(t, frames)
+	if len(frame.Fields) != 2 {
+		t.Fatalf("expected 2 fields (time + temperature), got %d", len(frame.Fields))
+	}
+	if got := frame.Fields[0].Len(); got != 0 {
+		t.Errorf("expected 0 rows, got %d", got)
+	}
+}
+
 func TestSortRowsByTime(t *testing.T) {
 	rows := []erddapRow{
 		{time: time.Date(2024, 1, 1, 2, 0, 0, 0, time.UTC)},
@@ -332,11 +527,12 @@ func TestParseTableJSONWithMappings(t *testing.T) {
 		},
 	}
 
-	frame, err := parseTableJSON(strings.NewReader(body), "response", mappings)
+	frames, err := parseTableJSON(strings.NewReader(body), "response", mappings)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
+	frame := onlyFrame(t, frames)
 	tempField := frame.Fields[1]
 	if tempField.Config == nil || tempField.Config.Unit != "suffix:degree_C" {
 		t.Fatalf("expected temperature to keep its Unit config, got %+v", tempField.Config)

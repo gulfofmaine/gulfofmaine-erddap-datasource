@@ -69,6 +69,7 @@ func TestQueryData(t *testing.T) {
 	if dr.Error != nil {
 		t.Fatalf("unexpected DataResponse error: %v", dr.Error)
 	}
+	assertWideFrames(t, dr.Frames)
 	if len(dr.Frames) != 1 {
 		t.Fatalf("expected 1 frame, got %d", len(dr.Frames))
 	}
@@ -82,6 +83,12 @@ func TestQueryData(t *testing.T) {
 	}
 	if frame.Fields[0].Len() != 2 {
 		t.Fatalf("expected 2 rows, got %d", frame.Fields[0].Len())
+	}
+	if frame.Meta == nil || frame.Meta.Type != data.FrameTypeTimeSeriesMulti {
+		t.Errorf("expected Meta.Type = %s, got %+v", data.FrameTypeTimeSeriesMulti, frame.Meta)
+	}
+	if frame.Meta != nil && !strings.Contains(frame.Meta.ExecutedQueryString, "/tabledap/foo.json") {
+		t.Errorf("expected Meta.ExecutedQueryString to hold the tabledap URL, got %q", frame.Meta.ExecutedQueryString)
 	}
 
 	if gotPath != "/tabledap/foo.json" {
@@ -127,6 +134,9 @@ func TestQueryDataNoData(t *testing.T) {
 	if dr.Error != nil {
 		t.Fatalf("expected no error for 'no matching results', got: %v", dr.Error)
 	}
+	// A zero-row frame must still be wide, so an alert rule over it evaluates
+	// to NoData rather than erroring.
+	assertWideFrames(t, dr.Frames)
 	if len(dr.Frames) != 1 {
 		t.Fatalf("expected 1 frame, got %d", len(dr.Frames))
 	}
@@ -140,6 +150,65 @@ func TestQueryDataNoData(t *testing.T) {
 			t.Errorf("expected zero-length field %q, got len %d", f.Name, f.Len())
 		}
 	}
+}
+
+// TestQueryDataMultiStationIsAlertable exercises the whole QueryData path with
+// the response shape that used to break alerting: a String column alongside
+// numeric values.
+func TestQueryDataMultiStationIsAlertable(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/info/") {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"table": {"columnNames": ["Row Type", "Variable Name", "Attribute Name", "Data Type", "Value"], "rows": []}}`))
+			return
+		}
+
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{
+			"table": {
+				"columnNames": ["time", "station", "temperature"],
+				"columnTypes": ["String", "String", "double"],
+				"columnUnits": ["UTC", "", "degree_C"],
+				"rows": [
+					["2024-01-01T00:00:00Z", "A01", 8.2],
+					["2024-01-01T00:00:00Z", "B01", 12.1]
+				]
+			}
+		}`))
+	}))
+	defer srv.Close()
+
+	ds := Datasource{
+		settings:     &models.PluginSettings{BaseURL: srv.URL},
+		httpClient:   srv.Client(),
+		flagMappings: newFlagMappingsCache(),
+	}
+
+	req := &backend.QueryDataRequest{
+		Queries: []backend.DataQuery{
+			{
+				RefID: "A",
+				JSON:  []byte(`{"datasetId": "foo", "variables": "station, temperature", "constraints": ""}`),
+			},
+		},
+	}
+
+	resp, err := ds.QueryData(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	dr := resp.Responses["A"]
+	if dr.Error != nil {
+		t.Fatalf("unexpected DataResponse error: %v", dr.Error)
+	}
+
+	assertWideFrames(t, dr.Frames)
+	if len(dr.Frames) != 2 {
+		t.Fatalf("expected 2 frames (one per station), got %d", len(dr.Frames))
+	}
+	frameByLabels(t, dr.Frames, data.Labels{"station": "A01"})
+	frameByLabels(t, dr.Frames, data.Labels{"station": "B01"})
 }
 
 func TestQueryDataServerError(t *testing.T) {

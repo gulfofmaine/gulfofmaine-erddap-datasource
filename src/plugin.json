@@ -6,6 +6,7 @@
   "metrics": true,
   "backend": true,
   "executable": "gpx_erddap",
+  "alerting": true,
   "info": {
     "description": "Query ERDDAP tabledap datasets as Grafana time series, with queries executed in the backend so alerting works.",
     "author": {

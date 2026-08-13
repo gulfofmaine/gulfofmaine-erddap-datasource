@@ -45,8 +45,25 @@ ERDDAP uses them as query-string structure):
 GET {baseUrl}/tabledap/M01_sbe37_all.json?time,temperature,salinity&time%3E=2026-07-01T12:00:00Z&time%3C=2026-07-02T12:00:00Z&station=%22A01%22&depth%3C2
 ```
 
-The response is returned as a single Grafana time series frame with one field per requested variable, plus
-`time`.
+The response is returned as Grafana time series frames: a `time` field plus one numeric field per
+requested numeric variable. See [String variables become labels](#string-variables-become-labels) for
+how non-numeric variables are handled.
+
+### String variables become labels
+
+Non-numeric (ERDDAP `String`) variables such as `station` are not returned as fields. Instead, rows are
+partitioned by their combined String values into one frame per distinct combination, and those values
+become Grafana **labels** on the numeric fields. Requesting `station, air_temperature` from a dataset
+covering two stations therefore yields two series — `air_temperature {station="A01"}` and
+`air_temperature {station="B01"}` — rather than one field with the stations interleaved at duplicate
+timestamps.
+
+This is also what makes the datasource usable for alerting: Grafana's expression engine only accepts
+_wide_ time series (a time field plus numeric fields), and rejects a frame carrying a String field
+alongside `time` with "input data must be a wide series".
+
+One consequence: because String variables are labels rather than columns, they no longer appear as
+columns in a table panel.
 
 ### Time range
 
@@ -77,6 +94,24 @@ underlying values remain numeric, so the field can still be plotted as a time se
 panels, and state timelines display the mapped text and color instead of the raw number. This metadata
 is cached per datasource instance for one hour. If the metadata can't be fetched or parsed, the query
 still succeeds — the field is just left without mappings.
+
+## Alerting
+
+Queries are executed in the Go backend rather than the browser, and every frame the backend returns is a
+wide time series, so ERDDAP queries can be used directly as alert rule queries. The datasource
+configuration page shows **Alerting: Supported**.
+
+Build a rule the same way as any other datasource: an ERDDAP query as refId `A`, then a `reduce` and a
+`threshold` expression over it.
+
+Two things to keep in mind when writing alert queries:
+
+- **Pin numeric dimensions with a constraint.** Only String variables become labels. Numeric dimension
+  variables — `depth`, `latitude`, `longitude` — cannot, so rows differing only by depth collapse into
+  one series with duplicate timestamps. Constrain them explicitly (e.g. `depth<2`) so the rule
+  evaluates a single physical series.
+- **A query that matches no rows evaluates to NoData**, not to an error, so set the rule's "No data"
+  handling to match your intent.
 
 ## Development
 
