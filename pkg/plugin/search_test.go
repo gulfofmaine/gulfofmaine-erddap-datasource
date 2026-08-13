@@ -37,8 +37,8 @@ func TestBuildSearchURL(t *testing.T) {
 		}
 	})
 
-	t.Run("preserves an existing base path", func(t *testing.T) {
-		raw, err := buildSearchURL("https://data.neracoos.org/erddap", "", 10)
+	t.Run("preserves an existing base path for a search", func(t *testing.T) {
+		raw, err := buildSearchURL("https://data.neracoos.org/erddap", "temperature", 10)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -52,13 +52,55 @@ func TestBuildSearchURL(t *testing.T) {
 		}
 	})
 
-	t.Run("omits searchFor when empty", func(t *testing.T) {
+	t.Run("preserves an existing base path for a browse", func(t *testing.T) {
+		raw, err := buildSearchURL("https://data.neracoos.org/erddap", "", 10)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		u, err := url.Parse(raw)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if u.Path != "/erddap/info/index.json" {
+			t.Errorf("path = %q, want /erddap/info/index.json", u.Path)
+		}
+	})
+
+	// /search/advanced.json 400s on a request with zero real criteria, which is
+	// exactly what an empty searchFor would be. /info/index.json lists every
+	// dataset unconditionally and returns the identical table shape, so a
+	// browse (empty searchFor) must hit that endpoint instead.
+	t.Run("browse hits info/index.json, not search/advanced.json", func(t *testing.T) {
 		raw, err := buildSearchURL("https://example.org/erddap", "", 10)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
+
+		u, err := url.Parse(raw)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if u.Path != "/erddap/info/index.json" {
+			t.Errorf("path = %q, want /erddap/info/index.json", u.Path)
+		}
 		if strings.Contains(raw, "searchFor") {
 			t.Errorf("expected no searchFor parameter, got %s", raw)
+		}
+	})
+
+	t.Run("a non-empty search still hits search/advanced.json", func(t *testing.T) {
+		raw, err := buildSearchURL("https://example.org/erddap", "temperature", 10)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		u, err := url.Parse(raw)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if u.Path != "/erddap/search/advanced.json" {
+			t.Errorf("path = %q, want /erddap/search/advanced.json", u.Path)
 		}
 	})
 
@@ -230,6 +272,30 @@ func TestSearchDatasets(t *testing.T) {
 		})
 
 		got, err := d.searchDatasets(context.Background(), "buoy", 10)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(got) != 1 || got[0].ID != "A01" {
+			t.Errorf("got %+v", got)
+		}
+	})
+
+	// A browse (empty searchFor) must hit /info/index.json instead of
+	// /search/advanced.json, which 400s on a request with zero real criteria.
+	// The two endpoints return the identical table shape, so the exact same
+	// fixture body proves parseSearchJSON needs no endpoint-specific logic.
+	t.Run("an empty search browses info/index.json", func(t *testing.T) {
+		d := newDS(t, func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/info/index.json" {
+				t.Errorf("unexpected path %q", r.URL.Path)
+			}
+			_, _ = w.Write([]byte(searchBody(
+				`["Title", "Summary", "Institution", "tabledap", "Dataset ID"]`,
+				`["Buoy A", "s", "NERACOOS", "https://e.org/tabledap/A", "A01"]`,
+			)))
+		})
+
+		got, err := d.searchDatasets(context.Background(), "", 10)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}

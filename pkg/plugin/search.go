@@ -71,12 +71,25 @@ type erddapDataset struct {
 	TabledapSupported bool
 }
 
-// buildSearchURL builds the ERDDAP advanced-search request URL.
+// buildSearchURL builds the ERDDAP request URL for a dataset search or
+// browse.
 //
 // page and itemsPerPage are always set: ERDDAP responds to a
-// /search/advanced.json request missing either one with a 302 redirect to the
-// HTML search form, so the plugin would quietly receive a page of HTML in
-// place of the JSON it asked for.
+// /search/advanced.json (or /info/index.json) request missing either one
+// with a 302 redirect to the HTML search form, so the plugin would quietly
+// receive a page of HTML in place of the JSON it asked for.
+//
+// searchFor decides which endpoint is used. /search/advanced.json rejects a
+// request with zero real criteria: with an empty (or blank) searchFor and no
+// other filter applied, ERDDAP answers with a 400 rather than "everything".
+// That matters because the dataset picker's "browse everything" case — the
+// combobox opening before the user has typed anything — calls in with an
+// empty searchFor and still needs a result. /info/index.json is ERDDAP's
+// unconditional dataset listing: it takes no searchFor at all and returns the
+// exact same table shape (columns, allDatasets row included) as
+// /search/advanced.json, so parseSearchJSON handles either response
+// unmodified. A non-empty searchFor is a real criterion, so it still goes to
+// /search/advanced.json as before.
 //
 // No protocol filter is applied — griddap-only datasets are returned and
 // flagged rather than excluded. Unlike the tabledap query string (which is
@@ -87,14 +100,18 @@ func buildSearchURL(baseURL, searchFor string, limit int) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	u = u.JoinPath("search", "advanced.json")
 
 	q := url.Values{}
 	q.Set("page", "1")
 	q.Set("itemsPerPage", strconv.Itoa(limit))
-	if searchFor != "" {
+
+	if searchFor == "" {
+		u = u.JoinPath("info", "index.json")
+	} else {
+		u = u.JoinPath("search", "advanced.json")
 		q.Set("searchFor", searchFor)
 	}
+
 	u.RawQuery = q.Encode()
 
 	return u.String(), nil
