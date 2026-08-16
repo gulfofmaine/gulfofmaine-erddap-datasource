@@ -161,6 +161,7 @@ export function QueryEditor({ datasource, query, onChange, onRunQuery }: Props) 
       >
         <MultiCombobox
           id="query-editor-variables"
+          data-testid="query-editor-variables"
           options={variableOptions}
           value={splitVariables(variables)}
           onChange={onVariablesChange}
