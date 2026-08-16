@@ -23,7 +23,10 @@ describe('ConfigEditor', () => {
   it('shows no error on first render even when the URL is empty', () => {
     const { input } = renderEditor();
 
-    expect(screen.queryByText('ERDDAP URL is required')).not.toBeInTheDocument();
+    // The message node stays permanently mounted (see ConfigEditor.tsx) and
+    // is only ever hidden via CSS, never added/removed — so it's present in
+    // the DOM from the first render, just not visible yet.
+    expect(screen.getByText('ERDDAP URL is required')).not.toBeVisible();
     expect(input).toBeValid();
   });
 
