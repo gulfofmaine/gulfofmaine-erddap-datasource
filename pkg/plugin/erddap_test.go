@@ -155,6 +155,16 @@ func TestBuildTabledapURL(t *testing.T) {
 			},
 			want: "https://example.com/erddap/tabledap/bad%2F..%2Fid%25.json?time,temperature&time%3E=2024-01-01T00:00:00Z&time%3C=2024-01-02T00:00:00Z",
 		},
+		{
+			name:    "pre-encoded constraints from ERDDAP's Data Access Form are normalized, not double-encoded",
+			baseURL: "https://example.com/erddap",
+			qm: models.QueryModel{
+				DatasetID:   "M01_sbe37_all",
+				Variables:   "temperature",
+				Constraints: `station=%22A01%22&depth%3C2`,
+			},
+			want: "https://example.com/erddap/tabledap/M01_sbe37_all.json?time,temperature&time%3E=2024-01-01T00:00:00Z&time%3C=2024-01-02T00:00:00Z&station=%22A01%22&depth%3C2",
+		},
 	}
 
 	for _, tc := range tests {
@@ -236,6 +246,16 @@ func TestEscapeERDDAPConstraints(t *testing.T) {
 			in:   `name="A\"&B"`,
 			want: `name=%22A%5C%22%26B%22`,
 		},
+		{
+			name: "even backslash run before closing quote toggles state (issue #38 regression)",
+			in:   `station="A\\"&depth<2`,
+			want: `station=%22A%5C%5C%22&depth%3C2`,
+		},
+		{
+			name: "odd backslash run (three) before closing quote stays escaped",
+			in:   `name="A\\\"&B"`,
+			want: `name=%22A%5C%5C%5C%22%26B%22`,
+		},
 	}
 
 	for _, tc := range tests {
@@ -243,6 +263,44 @@ func TestEscapeERDDAPConstraints(t *testing.T) {
 			got := escapeERDDAPConstraints(tc.in)
 			if got != tc.want {
 				t.Errorf("escapeERDDAPConstraints(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestNormalizeERDDAPConstraints(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "encoded and raw spellings of the same constraint produce identical output",
+			in:   `station=%22A%26B%22&depth%3C2`,
+			want: "station=%22A%26B%22&depth%3C2",
+		},
+		{
+			name: "raw spelling escapes to the same output as the encoded spelling",
+			in:   `station="A&B"&depth<2`,
+			want: "station=%22A%26B%22&depth%3C2",
+		},
+		{
+			name: "a literal plus is preserved through decode, not turned into a space",
+			in:   `station=%22A+B%22`,
+			want: "station=%22A%2BB%22",
+		},
+		{
+			name: "a literal percent that is not a valid escape falls back to raw and is re-encoded",
+			in:   `station="50%"`,
+			want: "station=%2250%25%22",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := normalizeERDDAPConstraints(tc.in)
+			if got != tc.want {
+				t.Errorf("normalizeERDDAPConstraints(%q) = %q, want %q", tc.in, got, tc.want)
 			}
 		})
 	}
