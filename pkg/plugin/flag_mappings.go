@@ -1,8 +1,6 @@
 package plugin
 
 import (
-	"encoding/json"
-	"errors"
 	"io"
 	"strings"
 
@@ -89,69 +87,28 @@ const (
 	flagMeaningsAttr = "flag_meanings"
 )
 
-// parseInfoJSON decodes an ERDDAP dataset info .../index.json response body
-// and builds value mappings for every variable that declares both the
-// flag_values and flag_meanings CF attributes. Variables without both
-// attributes, or with mismatched flag_values/flag_meanings counts, are
-// omitted from the result rather than erroring.
-func parseInfoJSON(r io.Reader) (map[string]data.ValueMappings, error) {
-	var resp erddapInfoResponse
-	if err := json.NewDecoder(r).Decode(&resp); err != nil {
-		return nil, err
-	}
+// flagAttrs accumulates one variable's flag_values/flag_meanings attribute
+// values as the info table is scanned; the two arrive on separate rows and
+// are only useful together.
+type flagAttrs struct {
+	values   string
+	meanings string
+}
 
-	varIdx, attrIdx, valIdx := -1, -1, -1
-	for i, name := range resp.Table.ColumnNames {
-		switch name {
-		case infoColVariableName:
-			varIdx = i
-		case infoColAttributeName:
-			attrIdx = i
-		case infoColValue:
-			valIdx = i
-		}
+// flagAttrsFor returns byVariable[variable], creating the entry on first use.
+func flagAttrsFor(byVariable map[string]*flagAttrs, variable string) *flagAttrs {
+	fa, ok := byVariable[variable]
+	if !ok {
+		fa = &flagAttrs{}
+		byVariable[variable] = fa
 	}
-	if varIdx == -1 || attrIdx == -1 || valIdx == -1 {
-		return nil, errors.New("erddap: info response missing expected columns")
-	}
+	return fa
+}
 
-	type flagAttrs struct {
-		values   string
-		meanings string
-	}
-	byVariable := map[string]*flagAttrs{}
-
-	maxIdx := varIdx
-	if attrIdx > maxIdx {
-		maxIdx = attrIdx
-	}
-	if valIdx > maxIdx {
-		maxIdx = valIdx
-	}
-
-	for _, row := range resp.Table.Rows {
-		if maxIdx >= len(row) {
-			continue // defensive against a ragged row
-		}
-
-		attr := row[attrIdx]
-		if attr != flagValuesAttr && attr != flagMeaningsAttr {
-			continue
-		}
-
-		variable := row[varIdx]
-		fa, ok := byVariable[variable]
-		if !ok {
-			fa = &flagAttrs{}
-			byVariable[variable] = fa
-		}
-		if attr == flagValuesAttr {
-			fa.values = row[valIdx]
-		} else {
-			fa.meanings = row[valIdx]
-		}
-	}
-
+// buildFlagMappings zips each variable's collected flag_values/flag_meanings
+// into a Grafana value mapping. Variables missing either attribute, or whose
+// two lists disagree in length, are omitted rather than erroring.
+func buildFlagMappings(byVariable map[string]*flagAttrs) map[string]data.ValueMappings {
 	mappings := map[string]data.ValueMappings{}
 	for variable, fa := range byVariable {
 		vm, ok := buildFlagMapping(fa.values, fa.meanings)
@@ -160,6 +117,21 @@ func parseInfoJSON(r io.Reader) (map[string]data.ValueMappings, error) {
 		}
 		mappings[variable] = vm
 	}
+	return mappings
+}
 
-	return mappings, nil
+// parseInfoJSON decodes an ERDDAP dataset info .../index.json response body
+// and builds value mappings for every variable that declares both the
+// flag_values and flag_meanings CF attributes. Variables without both
+// attributes, or with mismatched flag_values/flag_meanings counts, are
+// omitted from the result rather than erroring.
+//
+// This is the flag-mapping view of parseDatasetInfo, which parses the same
+// document once for both the mappings and the dataset's variable list.
+func parseInfoJSON(r io.Reader) (map[string]data.ValueMappings, error) {
+	info, err := parseDatasetInfo(r)
+	if err != nil {
+		return nil, err
+	}
+	return info.Mappings, nil
 }

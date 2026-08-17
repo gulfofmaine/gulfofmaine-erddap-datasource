@@ -20,6 +20,7 @@ import (
 var (
 	_ backend.QueryDataHandler      = (*Datasource)(nil)
 	_ backend.CheckHealthHandler    = (*Datasource)(nil)
+	_ backend.CallResourceHandler   = (*Datasource)(nil)
 	_ instancemgmt.InstanceDisposer = (*Datasource)(nil)
 )
 
@@ -35,9 +36,14 @@ const erddapVersionPrefix = "ERDDAP_version="
 // Datasource queries an ERDDAP server's tabledap endpoints via the Grafana
 // plugin SDK.
 type Datasource struct {
-	settings     *models.PluginSettings
-	httpClient   *http.Client
-	flagMappings *flagMappingsCache
+	settings   *models.PluginSettings
+	httpClient *http.Client
+	info       *infoCache
+
+	// resourceHandler routes the frontend's resource calls (dataset and
+	// variable discovery). It is built in NewDatasource rather than declared
+	// here because its routes are bound to methods on the instance.
+	resourceHandler backend.CallResourceHandler
 }
 
 // NewDatasource creates a new datasource instance.
@@ -53,11 +59,14 @@ func NewDatasource(ctx context.Context, settings backend.DataSourceInstanceSetti
 		return nil, err
 	}
 
-	return &Datasource{
-		settings:     pluginSettings,
-		httpClient:   httpClient,
-		flagMappings: newFlagMappingsCache(),
-	}, nil
+	d := &Datasource{
+		settings:   pluginSettings,
+		httpClient: httpClient,
+		info:       newInfoCache(),
+	}
+	d.resourceHandler = d.newResourceHandler()
+
+	return d, nil
 }
 
 // Dispose cleans up datasource instance resources when a new instance is

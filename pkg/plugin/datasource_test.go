@@ -42,9 +42,9 @@ func TestQueryData(t *testing.T) {
 	defer srv.Close()
 
 	ds := Datasource{
-		settings:     &models.PluginSettings{BaseURL: srv.URL},
-		httpClient:   srv.Client(),
-		flagMappings: newFlagMappingsCache(),
+		settings:   &models.PluginSettings{BaseURL: srv.URL},
+		httpClient: srv.Client(),
+		info:       newInfoCache(),
 	}
 
 	req := &backend.QueryDataRequest{
@@ -111,9 +111,9 @@ func TestQueryDataNoData(t *testing.T) {
 	defer srv.Close()
 
 	ds := Datasource{
-		settings:     &models.PluginSettings{BaseURL: srv.URL},
-		httpClient:   srv.Client(),
-		flagMappings: newFlagMappingsCache(),
+		settings:   &models.PluginSettings{BaseURL: srv.URL},
+		httpClient: srv.Client(),
+		info:       newInfoCache(),
 	}
 
 	req := &backend.QueryDataRequest{
@@ -179,9 +179,9 @@ func TestQueryDataMultiStationIsAlertable(t *testing.T) {
 	defer srv.Close()
 
 	ds := Datasource{
-		settings:     &models.PluginSettings{BaseURL: srv.URL},
-		httpClient:   srv.Client(),
-		flagMappings: newFlagMappingsCache(),
+		settings:   &models.PluginSettings{BaseURL: srv.URL},
+		httpClient: srv.Client(),
+		info:       newInfoCache(),
 	}
 
 	req := &backend.QueryDataRequest{
@@ -222,9 +222,9 @@ func TestQueryDataServerError(t *testing.T) {
 	defer srv.Close()
 
 	ds := Datasource{
-		settings:     &models.PluginSettings{BaseURL: srv.URL},
-		httpClient:   srv.Client(),
-		flagMappings: newFlagMappingsCache(),
+		settings:   &models.PluginSettings{BaseURL: srv.URL},
+		httpClient: srv.Client(),
+		info:       newInfoCache(),
 	}
 
 	req := &backend.QueryDataRequest{
@@ -258,9 +258,9 @@ func TestQueryDataEmptyErrorBody(t *testing.T) {
 	defer srv.Close()
 
 	ds := Datasource{
-		settings:     &models.PluginSettings{BaseURL: srv.URL},
-		httpClient:   srv.Client(),
-		flagMappings: newFlagMappingsCache(),
+		settings:   &models.PluginSettings{BaseURL: srv.URL},
+		httpClient: srv.Client(),
+		info:       newInfoCache(),
 	}
 
 	req := &backend.QueryDataRequest{
@@ -294,9 +294,9 @@ func TestQueryDataMalformedOKBody(t *testing.T) {
 	defer srv.Close()
 
 	ds := Datasource{
-		settings:     &models.PluginSettings{BaseURL: srv.URL},
-		httpClient:   srv.Client(),
-		flagMappings: newFlagMappingsCache(),
+		settings:   &models.PluginSettings{BaseURL: srv.URL},
+		httpClient: srv.Client(),
+		info:       newInfoCache(),
 	}
 
 	req := &backend.QueryDataRequest{
@@ -472,9 +472,9 @@ func TestQueryDataWithFlagMappings(t *testing.T) {
 	defer srv.Close()
 
 	ds := Datasource{
-		settings:     &models.PluginSettings{BaseURL: srv.URL},
-		httpClient:   srv.Client(),
-		flagMappings: newFlagMappingsCache(),
+		settings:   &models.PluginSettings{BaseURL: srv.URL},
+		httpClient: srv.Client(),
+		info:       newInfoCache(),
 	}
 
 	req := &backend.QueryDataRequest{
