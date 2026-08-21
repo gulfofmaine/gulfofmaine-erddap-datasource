@@ -3,7 +3,7 @@ module github.com/gulfofmaine/erddap
 go 1.26.5
 
 require (
-	github.com/grafana/grafana-plugin-sdk-go v0.296.1
+	github.com/grafana/grafana-plugin-sdk-go v0.296.2
 	github.com/magefile/mage v1.17.2
 )
 
