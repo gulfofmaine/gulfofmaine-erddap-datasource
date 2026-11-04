@@ -1,7 +1,7 @@
 services:
   grafana:
     user: root
-    container_name: 'gulfofmaine-erddap-datasource'
+    container_name: 'gmri-erddap-datasource'
 
     build:
       context: .
@@ -19,13 +19,13 @@ services:
     cap_add:
       - SYS_PTRACE
     volumes:
-      - ../dist:/var/lib/grafana/plugins/gulfofmaine-erddap-datasource
+      - ../dist:/var/lib/grafana/plugins/gmri-erddap-datasource
       - ../provisioning:/etc/grafana/provisioning
       - ..:/root/gulfofmaine-erddap-datasource
 
     environment:
       NODE_ENV: development
-      GF_LOG_FILTERS: plugin.gulfofmaine-erddap-datasource:debug
+      GF_LOG_FILTERS: plugin.gmri-erddap-datasource:debug
       GF_LOG_LEVEL: debug
       GF_DATAPROXY_LOGGING: 1
-      GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS: gulfofmaine-erddap-datasource
+      GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS: gmri-erddap-datasource

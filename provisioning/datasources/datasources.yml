@@ -4,7 +4,7 @@ datasources:
   - name: 'erddap'
     # An explicit uid so provisioned alert rules can reference this datasource.
     uid: 'erddap'
-    type: 'gulfofmaine-erddap-datasource'
+    type: 'gmri-erddap-datasource'
     access: proxy
     isDefault: false
     orgId: 1
