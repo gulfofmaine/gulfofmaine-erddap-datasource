@@ -24,10 +24,20 @@ jobs:
         with:
           persist-credentials: false
 
+      # build-plugin only accepts explicit versions (defaults: go 1.25, node 20),
+      # so read them from go.mod and .nvmrc to keep a single source of truth.
+      - name: Read toolchain versions
+        id: versions
+        run: |
+          echo "go=$(awk '/^go /{print $2}' go.mod)" >> "$GITHUB_OUTPUT"
+          echo "node=$(tr -d '[:space:]' < .nvmrc)" >> "$GITHUB_OUTPUT"
+
       - uses: grafana/plugin-actions/build-plugin@b05ed88ddca828d4700149aeacab32fcaf10caa0 # build-plugin/v1.2.1
+        with:
+          go-version: ${{ steps.versions.outputs.go }}
+          node-version: ${{ steps.versions.outputs.node }}
         # Uncomment to enable plugin signing
         # (For more info on how to generate the access policy token see https://grafana.com/developers/plugin-tools/publish-a-plugin/sign-a-plugin#generate-an-access-policy-token)
-        #with:
         # Make sure to save the token in your repository secrets
         #policy_token: $
         # Usage of GRAFANA_API_KEY is deprecated, prefer `policy_token` option above
