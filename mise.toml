@@ -1,9 +1,9 @@
 [tools]
-go = "latest"
-node = "latest"
+# go and node versions come from go.mod and .nvmrc (see idiomatic_version_file_enable_tools)
 mage = "latest"
 golangci-lint = "latest"
 prek = "latest"
 
 [settings]
 lockfile = true
+idiomatic_version_file_enable_tools = ["go", "node"]
