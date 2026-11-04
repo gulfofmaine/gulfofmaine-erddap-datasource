@@ -21,3 +21,6 @@ Initial release.
 - Add Grafana value mappings for variables with CF `flag_values`/`flag_meanings` attributes (e.g.
   QARTOD quality flags), so panels display the flag meaning and a conventional color instead of the raw
   numeric code.
+- Change the plugin ID to `gmri-erddap-datasource` to match the publishing Grafana Cloud account
+  (`gmri`); the previous `gulfofmaine-` prefix is not a registered account and fails catalog validation.
+  (#52)
