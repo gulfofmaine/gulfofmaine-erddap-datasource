@@ -32,7 +32,7 @@ jobs:
           echo "go=$(awk '/^go /{print $2}' go.mod)" >> "$GITHUB_OUTPUT"
           echo "node=$(tr -d '[:space:]' < .nvmrc)" >> "$GITHUB_OUTPUT"
 
-      - uses: grafana/plugin-actions/build-plugin@b05ed88ddca828d4700149aeacab32fcaf10caa0 # build-plugin/v1.2.1
+      - uses: grafana/plugin-actions/build-plugin@0247ace8990d6b0f9a62e9bffb00232798b360d3 # build-plugin/v2.0.0
         with:
           go-version: ${{ steps.versions.outputs.go }}
           node-version: ${{ steps.versions.outputs.node }}
